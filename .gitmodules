@@ -1,0 +1,3 @@
+[submodule "plasma/lib/openzeppelin-contracts"]
+	path = plasma/lib/openzeppelin-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts
