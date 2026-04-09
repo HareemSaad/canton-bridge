@@ -5,9 +5,9 @@
 #
 # What it does:
 #   1. Approves Gateway to spend MockERC20
-#   2. Calls Gateway.lock() with the BridgeOperator Canton party ID as recipient
+#   2. Calls Gateway.lock() with User1 as the Canton recipient (BridgeOperator relays)
 #   3. Polls the relayer DB until the row reaches RELAYED (or times out)
-#   4. Queries the Canton JSON API to confirm the MockUSDCxHolding was created
+#   4. Queries the Canton JSON API to confirm the MockUSDCxHolding was minted to User1
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,8 +30,9 @@ RELAYER_ENV="$ROOT/relayer/.env"
 [[ -f "$RELAYER_ENV" ]] || die "relayer/.env not found — run local-setup.sh first"
 set -a; source "$RELAYER_ENV"; set +a
 
-[[ -n "${LOCAL_CANTON_PARTY_ID:-}" ]] || die "LOCAL_CANTON_PARTY_ID not set in relayer/.env"
-[[ -n "${LOCAL_DATABASE_URL:-}" ]]    || die "LOCAL_DATABASE_URL not set in relayer/.env"
+[[ -n "${LOCAL_CANTON_PARTY_ID:-}" ]]    || die "LOCAL_CANTON_PARTY_ID not set in relayer/.env"
+[[ -n "${LOCAL_CANTON_RECIPIENT_ID:-}" ]] || die "LOCAL_CANTON_RECIPIENT_ID not set in relayer/.env"
+[[ -n "${LOCAL_DATABASE_URL:-}" ]]       || die "LOCAL_DATABASE_URL not set in relayer/.env"
 
 DEPLOYER=$(cast wallet address --private-key "$PRIVATE_KEY")
 CHAIN_ID=$(cast chain-id --rpc-url "$LOCAL_RPC")
@@ -56,7 +57,8 @@ print(next(t['contractAddress'] for t in d['transactions'] if t['transactionType
 
 log "Gateway   : $GATEWAY"
 log "MockERC20 : $MOCK_TOKEN"
-log "Recipient : $LOCAL_CANTON_PARTY_ID"
+log "Operator  : $LOCAL_CANTON_PARTY_ID"
+log "Recipient : $LOCAL_CANTON_RECIPIENT_ID"
 log "Amount    : $LOCK_AMOUNT (raw) = 1.000000 mUSDCx"
 echo ""
 
@@ -70,10 +72,10 @@ cast send "$MOCK_TOKEN" \
 ok "Approved"
 
 # ─── step 2: lock tokens on Plasma ───────────────────────────────────────────
-log "Calling Gateway.lock() — recipient = Canton BridgeOperator party..."
+log "Calling Gateway.lock() — recipient = User1 (Canton), relayed by BridgeOperator..."
 TX_HASH=$(cast send "$GATEWAY" \
   "lock(address,uint256,string,bytes32)" \
-  "$MOCK_TOKEN" "$LOCK_AMOUNT" "$LOCAL_CANTON_PARTY_ID" "$CANTON_CHAIN_ID" \
+  "$MOCK_TOKEN" "$LOCK_AMOUNT" "$LOCAL_CANTON_RECIPIENT_ID" "$CANTON_CHAIN_ID" \
   --private-key "$PRIVATE_KEY" \
   --rpc-url "$LOCAL_RPC" \
   --json | python3 -c "import json,sys; print(json.load(sys.stdin)['transactionHash'])")

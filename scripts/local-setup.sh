@@ -249,6 +249,23 @@ for p in parties:
 [[ -n "$BRIDGE_OPERATOR_PARTY" ]] || die "Failed to get BridgeOperator party ID — check /tmp/canton.log"
 ok "BridgeOperator: $BRIDGE_OPERATOR_PARTY"
 
+# ─── 4e-ii. fetch User1 party ID (used as e2e test recipient) ─────────────────
+log "Fetching User1 party ID from ledger..."
+USER1_PARTY=$(daml ledger list-parties \
+  --host localhost \
+  --port "$CANTON_GRPC_PORT" \
+  --json 2>/dev/null | python3 -c "
+import json, sys
+parties = json.load(sys.stdin)
+for p in parties:
+    party_id = p.get('party') or p.get('identifier', '')
+    if 'User1' in party_id:
+        print(party_id)
+        break
+")
+[[ -n "$USER1_PARTY" ]] || die "Failed to get User1 party ID — check /tmp/canton.log"
+ok "User1: $USER1_PARTY"
+
 # ─── 4f. write relayer/.env ───────────────────────────────────────────────────
 log "Writing relayer/.env..."
 cat > "$ROOT/relayer/.env" <<ENVEOF
@@ -259,6 +276,7 @@ LOCAL_SUBGRAPH_URL=${GRAPH_QUERY}/subgraphs/name/${SUBGRAPH_NAME}
 LOCAL_PLASMA_RPC=${LOCAL_RPC}
 LOCAL_CANTON_URL=http://localhost:${CANTON_JSON_API_PORT}
 LOCAL_CANTON_PARTY_ID=${BRIDGE_OPERATOR_PARTY}
+LOCAL_CANTON_RECIPIENT_ID=${USER1_PARTY}
 LOCAL_CANTON_TOKEN=
 LOCAL_CANTON_USER_ID=sandbox
 
@@ -267,6 +285,7 @@ PROD_SUBGRAPH_URL=
 PROD_PLASMA_RPC=
 PROD_CANTON_URL=
 PROD_CANTON_PARTY_ID=
+PROD_CANTON_RECIPIENT_ID=
 PROD_CANTON_TOKEN=
 PROD_CANTON_USER_ID=
 
@@ -312,7 +331,8 @@ echo "  GraphQL      : $GRAPH_QUERY/subgraphs/name/$SUBGRAPH_NAME"
 echo "  Relayer DB   : postgresql://$RELAYER_DB_USER:$RELAYER_DB_PASS@localhost:$RELAYER_DB_PORT/$RELAYER_DB_NAME"
 echo "  Canton gRPC  : localhost:$CANTON_GRPC_PORT"
 echo "  Canton HTTP  : http://localhost:$CANTON_JSON_API_PORT"
-echo "  BridgeOp     : $BRIDGE_OPERATOR_PARTY"
+echo "  BridgeOp     : $BRIDGE_OPERATOR_PARTY"\
+  echo "  User1        : $USER1_PARTY"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "  Next steps:"
