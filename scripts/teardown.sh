@@ -29,6 +29,10 @@ if [[ -f "$SUBGRAPH_DIR/docker-compose.yml" ]]; then
   docker compose -f "$SUBGRAPH_DIR/docker-compose.yml" down 2>/dev/null && ok "Docker stack stopped" || true
 fi
 
+# ─── 1b. stop relayer postgres ────────────────────────────────────────────────
+log "Stopping relayer PostgreSQL..."
+docker rm -f relayer-postgres 2>/dev/null && ok "relayer-postgres removed" || true
+
 # ─── 2. kill anvil ────────────────────────────────────────────────────────────
 log "Killing Anvil..."
 kill_port 8545 "Anvil"
@@ -41,7 +45,8 @@ kill_port 8020 "graph-node admin"
 kill_port 8030 "graph-node indexing status"
 kill_port 8040 "graph-node metrics"
 kill_port 5001 "IPFS"
-kill_port 5432 "PostgreSQL"
+kill_port 5432 "PostgreSQL (subgraph)"
+kill_port 5433 "PostgreSQL (relayer)"
 
 echo ""
 ok "All done — stack is torn down."

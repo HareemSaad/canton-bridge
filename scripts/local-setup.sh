@@ -14,6 +14,11 @@ SUBGRAPH_NAME="gateway-local"
 GRAPH_ADMIN="http://localhost:8020"
 GRAPH_IPFS="http://localhost:5001"
 GRAPH_QUERY="http://localhost:8000"
+RELAYER_DB_CONTAINER="relayer-postgres"
+RELAYER_DB_PORT=5433
+RELAYER_DB_USER="relayer"
+RELAYER_DB_PASS="relayer"
+RELAYER_DB_NAME="relayer"
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 log()  { echo "▶  $*"; }
@@ -133,6 +138,39 @@ wait_for_port "graph-node admin" 8020
 sleep 5
 ok "graph-node stack is up"
 
+# ─── 4b. start relayer postgres ──────────────────────────────────────────────
+log "Starting relayer PostgreSQL..."
+docker rm -f "$RELAYER_DB_CONTAINER" 2>/dev/null || true
+docker run -d \
+  --name "$RELAYER_DB_CONTAINER" \
+  -e POSTGRES_USER="$RELAYER_DB_USER" \
+  -e POSTGRES_PASSWORD="$RELAYER_DB_PASS" \
+  -e POSTGRES_DB="$RELAYER_DB_NAME" \
+  -p "$RELAYER_DB_PORT":5432 \
+  postgres:14
+wait_for_port "relayer-postgres" "$RELAYER_DB_PORT"
+ok "Relayer PostgreSQL running on port $RELAYER_DB_PORT"
+
+log "Writing relayer/.env..."
+cat > "$ROOT/relayer/.env" <<ENVEOF
+MODE=local
+
+LOCAL_DATABASE_URL=postgresql://${RELAYER_DB_USER}:${RELAYER_DB_PASS}@localhost:${RELAYER_DB_PORT}/${RELAYER_DB_NAME}
+LOCAL_SUBGRAPH_URL=${GRAPH_QUERY}/subgraphs/name/${SUBGRAPH_NAME}
+LOCAL_PLASMA_RPC=${LOCAL_RPC}
+
+PROD_DATABASE_URL=
+PROD_SUBGRAPH_URL=
+PROD_PLASMA_RPC=
+
+POLL_INTERVAL_MS=30000
+PENDING_CHECK_INTERVAL_MS=60000
+SUBGRAPH_PAGE_SIZE=100
+PORT=3000
+NODE_ENV=development
+ENVEOF
+ok "Wrote relayer/.env"
+
 # ─── 5. codegen + build ───────────────────────────────────────────────────────
 log "Installing subgraph dependencies..."
 npm install --silent
@@ -157,10 +195,12 @@ npx graph deploy \
 # ─── done ─────────────────────────────────────────────────────────────────────
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  Gateway  : $CONTRACT_ADDRESS"
-echo "  Chain ID : $CHAIN_ID"
-echo "  Block    : $BLOCK_NUMBER"
-echo "  GraphQL  : $GRAPH_QUERY/subgraphs/name/$SUBGRAPH_NAME"
+echo "  Gateway    : $CONTRACT_ADDRESS"
+echo "  Chain ID   : $CHAIN_ID"
+echo "  Block      : $BLOCK_NUMBER"
+echo "  GraphQL    : $GRAPH_QUERY/subgraphs/name/$SUBGRAPH_NAME"
+echo "  Relayer DB : postgresql://$RELAYER_DB_USER:$RELAYER_DB_PASS@localhost:$RELAYER_DB_PORT/$RELAYER_DB_NAME"
+echo "  Relayer    : cd relayer && yarn install && yarn start:dev"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "  Anvil is still running (PID $ANVIL_PID)."
