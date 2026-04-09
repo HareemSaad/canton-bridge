@@ -1,27 +1,28 @@
 type Mode = 'local' | 'prod';
 
-const profiles: Record<
-  Mode,
-  {
-    databaseUrl: string | undefined;
-    subgraphUrl: string | undefined;
-    plasmaRpc: string | undefined;
-  }
-> = {
-  local: {
-    databaseUrl: process.env.LOCAL_DATABASE_URL,
-    subgraphUrl: process.env.LOCAL_SUBGRAPH_URL,
-    plasmaRpc: process.env.LOCAL_PLASMA_RPC,
-  },
-  prod: {
-    databaseUrl: process.env.PROD_DATABASE_URL,
-    subgraphUrl: process.env.PROD_SUBGRAPH_URL,
-    plasmaRpc: process.env.PROD_PLASMA_RPC,
-  },
-};
-
 export default () => {
   const mode = (process.env.MODE ?? 'local') as Mode;
+
+  const profiles: Record<
+    Mode,
+    {
+      databaseUrl: string | undefined;
+      subgraphUrl: string | undefined;
+      plasmaRpc: string | undefined;
+    }
+  > = {
+    local: {
+      databaseUrl: process.env.LOCAL_DATABASE_URL,
+      subgraphUrl: process.env.LOCAL_SUBGRAPH_URL,
+      plasmaRpc: process.env.LOCAL_PLASMA_RPC,
+    },
+    prod: {
+      databaseUrl: process.env.PROD_DATABASE_URL,
+      subgraphUrl: process.env.PROD_SUBGRAPH_URL,
+      plasmaRpc: process.env.PROD_PLASMA_RPC,
+    },
+  };
+
   const profile = profiles[mode];
 
   return {
