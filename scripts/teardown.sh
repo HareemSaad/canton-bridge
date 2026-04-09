@@ -33,11 +33,16 @@ fi
 log "Stopping relayer PostgreSQL..."
 docker rm -f relayer-postgres 2>/dev/null && ok "relayer-postgres removed" || true
 
-# ─── 2. kill anvil ────────────────────────────────────────────────────────────
+# ─── 2. kill nest (relayer) ───────────────────────────────────────────────────
+log "Stopping NestJS relayer..."
+pkill -f "nest start" 2>/dev/null && ok "NestJS stopped" || true
+kill_port 3000 "NestJS (relayer)"
+
+# ─── 3. kill anvil ────────────────────────────────────────────────────────────
 log "Killing Anvil..."
 kill_port 8545 "Anvil"
 
-# ─── 3. kill any leftover port stragglers ─────────────────────────────────────
+# ─── 4. kill any leftover port stragglers ─────────────────────────────────────
 log "Cleaning up remaining ports..."
 kill_port 8000 "graph-node GraphQL HTTP"
 kill_port 8001 "graph-node GraphQL WS"
