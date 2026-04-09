@@ -1,0 +1,12 @@
+sdk-version: 3.4.11
+name: canton-bridge
+version: 1.0.0
+source: daml
+dependencies:
+- daml-prim
+- daml-stdlib
+- daml-script
+init-script: Main:setup
+ledger:
+  host: localhost
+  port: 6865

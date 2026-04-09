@@ -1,0 +1,11 @@
+module Main where
+
+import Daml.Script
+
+setup : Script ()
+setup = do
+  -- create parties
+  operator <- allocatePartyByHint (PartyIdHint "BridgeOperator")
+  user1 <- allocatePartyByHint (PartyIdHint "User1")
+
+  debug("wallet created")
