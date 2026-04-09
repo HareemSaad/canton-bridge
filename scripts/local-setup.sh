@@ -38,6 +38,22 @@ wait_for_port() {
   ok "$name is up"
 }
 
+wait_for_canton_ready() {
+  local retries=60
+  log "Waiting for Canton synchronizer to connect..."
+  until curl -sf "http://localhost:${CANTON_JSON_API_PORT}/v2/state/connected-synchronizers" \
+    2>/dev/null | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+syncs=d.get('connectedSynchronizers',[])
+sys.exit(0 if syncs else 1)
+" 2>/dev/null; do
+    ((retries--)) || die "Canton synchronizer did not connect in time"
+    sleep 2
+  done
+  ok "Canton synchronizer connected"
+}
+
 cleanup() {
   if [[ -n "${ANVIL_PID:-}" ]]; then
     log "Stopping Anvil (PID $ANVIL_PID)..."
@@ -201,6 +217,7 @@ CANTON_PID=$!
 
 wait_for_port "Canton gRPC" "$CANTON_GRPC_PORT"
 wait_for_port "Canton JSON API" "$CANTON_JSON_API_PORT"
+wait_for_canton_ready
 ok "Canton sandbox running (PID $CANTON_PID)"
 
 # ─── 4d. run Canton init script ───────────────────────────────────────────────
