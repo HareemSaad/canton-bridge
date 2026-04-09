@@ -1,0 +1,47 @@
+services:
+  ipfs:
+    image: ipfs/kubo:v0.14.0
+    ports:
+      - "5001:5001"
+    volumes:
+      - ipfs_data:/data/ipfs
+
+  postgres:
+    image: postgres:14
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: graph-node
+      POSTGRES_PASSWORD: let-me-in
+      POSTGRES_DB: graph-node
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  graph-node:
+    image: graphprotocol/graph-node:latest
+    ports:
+      - "8000:8000"   # GraphQL HTTP
+      - "8001:8001"   # GraphQL WebSocket
+      - "8020:8020"   # Admin JSON-RPC (deploy here)
+      - "8030:8030"   # Indexing status
+      - "8040:8040"   # Prometheus metrics
+    depends_on:
+      - ipfs
+      - postgres
+    environment:
+      postgres_host: postgres
+      postgres_user: graph-node
+      postgres_pass: let-me-in
+      postgres_db: graph-node
+      ipfs: "ipfs:5001"
+      # Anvil fork runs on host port 8545.
+      # host.docker.internal resolves to the host machine from inside Docker.
+      ethereum: "plasma:http://host.docker.internal:8545"
+      GRAPH_LOG: info
+      ETHEREUM_POLLING_INTERVAL: 1000   # ms – fast for local dev
+      GRAPH_ETHEREUM_BLOCK_INGESTOR_MAX_CONCURRENT_JSON_RPC_CALLS_FOR_TIP_UPDATES: "1"
+
+volumes:
+  ipfs_data:
+  postgres_data:

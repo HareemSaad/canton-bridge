@@ -1,0 +1,11 @@
+type Lock @entity(immutable: true) {
+  id: String!          # nonce as string
+  nonce: BigInt!
+  token: Bytes!        # token address
+  amount: BigInt!
+  recipient: String!
+  toChain: Bytes!      # keccak256 chain identifier
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
