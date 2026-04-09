@@ -14,7 +14,6 @@ kill_port() {
   if [[ -n "$pids" ]]; then
     echo "$pids" | xargs kill -15 2>/dev/null || true
     sleep 1
-    # force-kill anything still alive
     pids=$(lsof -ti:"$port" 2>/dev/null) || true
     [[ -n "$pids" ]] && echo "$pids" | xargs kill -9 2>/dev/null || true
     ok "Killed $name (port $port)"
@@ -23,26 +22,33 @@ kill_port() {
   fi
 }
 
-# ─── 1. stop docker stack ─────────────────────────────────────────────────────
+# ─── 1. stop graph-node docker stack ─────────────────────────────────────────
 if [[ -f "$SUBGRAPH_DIR/docker-compose.yml" ]]; then
   log "Stopping graph-node Docker stack..."
   docker compose -f "$SUBGRAPH_DIR/docker-compose.yml" down 2>/dev/null && ok "Docker stack stopped" || true
 fi
 
-# ─── 1b. stop relayer postgres ────────────────────────────────────────────────
+# ─── 2. stop relayer postgres ─────────────────────────────────────────────────
 log "Stopping relayer PostgreSQL..."
 docker rm -f relayer-postgres 2>/dev/null && ok "relayer-postgres removed" || true
 
-# ─── 2. kill nest (relayer) ───────────────────────────────────────────────────
+# ─── 3. kill NestJS relayer ───────────────────────────────────────────────────
 log "Stopping NestJS relayer..."
 pkill -f "nest start" 2>/dev/null && ok "NestJS stopped" || true
 kill_port 3000 "NestJS (relayer)"
 
-# ─── 3. kill anvil ────────────────────────────────────────────────────────────
+# ─── 4. kill Canton sandbox ───────────────────────────────────────────────────
+log "Stopping Canton sandbox..."
+pkill -f "daml sandbox" 2>/dev/null || true
+pkill -f "canton" 2>/dev/null || true
+kill_port 6865 "Canton gRPC"
+kill_port 7575 "Canton JSON API"
+
+# ─── 5. kill Anvil ────────────────────────────────────────────────────────────
 log "Killing Anvil..."
 kill_port 8545 "Anvil"
 
-# ─── 4. kill any leftover port stragglers ─────────────────────────────────────
+# ─── 6. kill any leftover port stragglers ─────────────────────────────────────
 log "Cleaning up remaining ports..."
 kill_port 8000 "graph-node GraphQL HTTP"
 kill_port 8001 "graph-node GraphQL WS"
