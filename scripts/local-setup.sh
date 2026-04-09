@@ -158,14 +158,21 @@ MODE=local
 LOCAL_DATABASE_URL=postgresql://${RELAYER_DB_USER}:${RELAYER_DB_PASS}@localhost:${RELAYER_DB_PORT}/${RELAYER_DB_NAME}
 LOCAL_SUBGRAPH_URL=${GRAPH_QUERY}/subgraphs/name/${SUBGRAPH_NAME}
 LOCAL_PLASMA_RPC=${LOCAL_RPC}
+LOCAL_CANTON_URL=http://localhost:7575
+LOCAL_CANTON_PARTY_ID=
+LOCAL_CANTON_TOKEN=
 
 PROD_DATABASE_URL=
 PROD_SUBGRAPH_URL=
 PROD_PLASMA_RPC=
+PROD_CANTON_URL=
+PROD_CANTON_PARTY_ID=
+PROD_CANTON_TOKEN=
 
 POLL_INTERVAL_MS=30000
 PENDING_CHECK_INTERVAL_MS=60000
 SUBGRAPH_PAGE_SIZE=100
+CANTON_TOKEN_DECIMALS=6
 PORT=3000
 NODE_ENV=development
 ENVEOF
@@ -200,6 +207,7 @@ echo "  Chain ID   : $CHAIN_ID"
 echo "  Block      : $BLOCK_NUMBER"
 echo "  GraphQL    : $GRAPH_QUERY/subgraphs/name/$SUBGRAPH_NAME"
 echo "  Relayer DB : postgresql://$RELAYER_DB_USER:$RELAYER_DB_PASS@localhost:$RELAYER_DB_PORT/$RELAYER_DB_NAME"
+echo "  Canton     : cd canton && daml start  (then copy BridgeOperator party ID → relayer/.env LOCAL_CANTON_PARTY_ID)"
 echo "  Relayer    : cd relayer && yarn install && yarn start:dev"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""

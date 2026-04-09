@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { CantonModule } from './canton/canton.module';
 import configuration from './config/configuration';
 import { DatabaseModule } from './database/database.module';
 import { BridgeTransaction } from './database/entities/bridge-transaction.entity';
@@ -15,6 +16,7 @@ import { SubgraphModule } from './subgraph/subgraph.module';
     DatabaseModule,
     TypeOrmModule.forFeature([BridgeTransaction]),
     SubgraphModule,
+    CantonModule,
     WatcherModule,
   ],
   controllers: [AppController],

@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { CantonService } from '../canton/canton.service';
 import {
   BridgeTransaction,
   BridgeTxStatus,
@@ -21,6 +22,7 @@ export class WatcherService implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     private readonly subgraph: SubgraphService,
+    private readonly canton: CantonService,
     private readonly config: ConfigService,
     @InjectRepository(BridgeTransaction)
     private readonly repo: Repository<BridgeTransaction>,
@@ -114,14 +116,26 @@ export class WatcherService implements OnModuleInit, OnModuleDestroy {
       if (pending.length === 0) return;
 
       this.logger.log(
-        `${pending.length} pending transaction(s) awaiting Canton submission`,
+        `${pending.length} pending transaction(s) — submitting to Canton`,
       );
 
       for (const tx of pending) {
-        // Canton submission not implemented yet — placeholder for future CantonModule
-        this.logger.debug(
-          `[PENDING] nonce=${tx.nonce} token=${tx.token} amount=${tx.amount} recipient=${tx.recipient}`,
-        );
+        try {
+          const cantonTxId = await this.canton.relay(tx);
+          await this.repo.update(tx.id, {
+            status: BridgeTxStatus.RELAYED,
+            cantonTxId,
+            cantonSubmittedAt: new Date(),
+          });
+          this.logger.log(
+            `Relayed nonce=${tx.nonce} → cantonTxId=${cantonTxId}`,
+          );
+        } catch (err) {
+          this.logger.error(
+            `Failed to relay nonce=${tx.nonce}: ${(err as Error).message}`,
+          );
+          await this.repo.update(tx.id, { status: BridgeTxStatus.FAILED });
+        }
       }
     } catch (err) {
       this.logger.error('Pending check failed', (err as Error).message);

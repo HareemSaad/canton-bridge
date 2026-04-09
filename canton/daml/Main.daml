@@ -2,10 +2,12 @@ module Main where
 
 import Daml.Script
 
+-- | Allocate bridge parties on startup.
+-- The complex BridgeReceiver → Mint flow is exercised by the relayer at runtime,
+-- not in the init script, to avoid Canton sandbox bootstrap failures.
 setup : Script ()
 setup = do
-  -- create parties
-  operator <- allocatePartyByHint (PartyIdHint "BridgeOperator")
-  user1 <- allocatePartyByHint (PartyIdHint "User1")
-
-  debug("wallet created")
+  _operator <- allocatePartyByHint (PartyIdHint "BridgeOperator")
+  _user1    <- allocatePartyByHint (PartyIdHint "User1")
+  _user2    <- allocatePartyByHint (PartyIdHint "User2")
+  debug "Parties allocated: BridgeOperator, User1, User2"

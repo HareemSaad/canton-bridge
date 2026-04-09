@@ -9,17 +9,29 @@ export default () => {
       databaseUrl: string | undefined;
       subgraphUrl: string | undefined;
       plasmaRpc: string | undefined;
+      cantonUrl: string | undefined;
+      cantonPartyId: string | undefined;
+      cantonToken: string | undefined;
+      cantonUserId: string | undefined;
     }
   > = {
     local: {
       databaseUrl: process.env.LOCAL_DATABASE_URL,
       subgraphUrl: process.env.LOCAL_SUBGRAPH_URL,
       plasmaRpc: process.env.LOCAL_PLASMA_RPC,
+      cantonUrl: process.env.LOCAL_CANTON_URL,
+      cantonPartyId: process.env.LOCAL_CANTON_PARTY_ID,
+      cantonToken: process.env.LOCAL_CANTON_TOKEN,
+      cantonUserId: process.env.LOCAL_CANTON_USER_ID,
     },
     prod: {
       databaseUrl: process.env.PROD_DATABASE_URL,
       subgraphUrl: process.env.PROD_SUBGRAPH_URL,
       plasmaRpc: process.env.PROD_PLASMA_RPC,
+      cantonUrl: process.env.PROD_CANTON_URL,
+      cantonPartyId: process.env.PROD_CANTON_PARTY_ID,
+      cantonToken: process.env.PROD_CANTON_TOKEN,
+      cantonUserId: process.env.PROD_CANTON_USER_ID,
     },
   };
 
@@ -45,6 +57,11 @@ export default () => {
         process.env.PENDING_CHECK_INTERVAL_MS ?? '60000',
         10,
       ),
+      url: profile.cantonUrl,
+      partyId: profile.cantonPartyId,
+      token: profile.cantonToken,
+      userId: profile.cantonUserId ?? 'sandbox',
+      tokenDecimals: parseInt(process.env.CANTON_TOKEN_DECIMALS ?? '6', 10),
     },
   };
 };
