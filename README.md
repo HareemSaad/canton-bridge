@@ -75,7 +75,9 @@ cp plasma/.env.example plasma/.env
 
 Edit `plasma/.env` and fill in your `PRIVATE_KEY` (any Anvil dev key works for local testing).
 
-### 2. Start the full stack
+### 2. Open docker desktop
+
+### 3. Start the full stack
 
 ```bash
 ./scripts/local-setup.sh
@@ -92,7 +94,7 @@ This single script:
 
 Leave this terminal running (Ctrl-C tears everything down).
 
-### 3. Start the relayer
+### 4. Start the relayer
 
 In a second terminal:
 
@@ -104,7 +106,7 @@ yarn start:dev
 
 The relayer polls the subgraph every 30 seconds and submits pending transactions to Canton every 60 seconds.
 
-### 4. Run the end-to-end test
+### 5. Run the end-to-end test
 
 In a third terminal:
 
@@ -114,13 +116,13 @@ In a third terminal:
 
 This approves and locks 1 mUSDCx on Plasma with `User1` as the Canton recipient, then waits for the relayer to relay it and confirms a `MockUSDCxHolding` appears on the Canton ledger owned by `User1`.
 
-### 5. Inspect Canton transactions (optional)
+### 6. Inspect Canton transactions (optional)
 
 ```bash
 ./scripts/canton-txns.sh
 ```
 
-### 6. Tear everything down
+### 7. Tear everything down
 
 ```bash
 ./scripts/teardown.sh
