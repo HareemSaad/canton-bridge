@@ -1,12 +1,13 @@
-// SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.13;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
 
 import {Script, console} from "forge-std/Script.sol";
 import {Gateway} from "../src/Gateway.sol";
-import {MockERC20} from "../src/MockERC20.sol";
+import {MockUSDC} from "../src/MockERC20.sol";
 
-/// @dev Deploys MockERC20, whitelists it + the Canton chain in the Gateway,
-///      and mints 1 000 mUSDCx (6 decimals) to the deployer for testing.
+/// @dev Legacy helper: deploys MockUSDC (6 dec), whitelists it + Canton chain
+///      in the original Gateway contract, and mints 1 000 mUSDC to the deployer.
+///      Used by local-setup.sh for the old Gateway-based POC flow.
 contract SetupTest is Script {
     function run() external {
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
@@ -15,19 +16,15 @@ contract SetupTest is Script {
 
         vm.startBroadcast(deployerKey);
 
-        // Deploy mock token (6 decimals, like USDC)
-        MockERC20 token = new MockERC20("Mock USDCx", "mUSDCx", 6);
-
-        // Mint 1 000 mUSDCx to the deployer (1 000 * 10^6)
+        MockUSDC token = new MockUSDC(deployer);
         token.mint(deployer, 1_000 * 10 ** 6);
 
-        // Whitelist the token and the Canton destination chain
         Gateway(gateway).whiteListToken(address(token));
         Gateway(gateway).whiteListChain(keccak256("canton"));
 
         vm.stopBroadcast();
 
-        console.log("MockERC20  :", address(token));
+        console.log("MockUSDC   :", address(token));
         console.log("Gateway    :", gateway);
         console.log("Token and canton chain whitelisted");
     }
