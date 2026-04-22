@@ -60,22 +60,23 @@ export class WatcherService implements OnModuleInit, OnModuleDestroy {
 
       // Drain any burst: keep fetching full pages until a partial page is returned
       while (true) {
-        const locks = await this.subgraph.fetchLocksSinceNonce(
+        const deposits = await this.subgraph.fetchDepositsSinceNonce(
           cursor,
           pageSize,
         );
 
-        if (locks.length === 0) break;
+        if (deposits.length === 0) break;
 
-        const rows = locks.map((l) => ({
-          nonce: l.nonce,
-          token: l.token,
-          amount: l.amount,
-          recipient: l.recipient,
-          toChain: l.toChain,
-          blockNumber: l.blockNumber,
-          blockTimestamp: l.blockTimestamp,
-          transactionHash: l.transactionHash,
+        const rows = deposits.map((d) => ({
+          nonce: d.nonce,
+          token: d.token,
+          amount: d.amount,
+          recipient: d.fingerprint, // bytes32 fingerprint stored in recipient field
+          depositor: d.user,
+          toChain: null,
+          blockNumber: d.blockNumber,
+          blockTimestamp: d.blockTimestamp,
+          transactionHash: d.transactionHash,
           status: BridgeTxStatus.PENDING,
           cantonTxId: null,
           cantonSubmittedAt: null,
@@ -90,14 +91,14 @@ export class WatcherService implements OnModuleInit, OnModuleDestroy {
           .execute();
 
         totalInserted += result.raw?.length ?? 0;
-        cursor = locks[locks.length - 1].nonce;
+        cursor = deposits[deposits.length - 1].nonce;
 
-        if (locks.length < pageSize) break;
+        if (deposits.length < pageSize) break;
       }
 
       if (totalInserted > 0) {
         this.logger.log(
-          `Inserted ${totalInserted} new lock(s), latest nonce: ${cursor}`,
+          `Inserted ${totalInserted} new deposit(s), latest nonce: ${cursor}`,
         );
       }
     } catch (err) {

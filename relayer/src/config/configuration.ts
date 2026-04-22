@@ -13,6 +13,8 @@ export default () => {
       cantonPartyId: string | undefined;
       cantonToken: string | undefined;
       cantonUserId: string | undefined;
+      cantonTokenConfigId: string | undefined;
+      cantonBridgeStateId: string | undefined;
     }
   > = {
     local: {
@@ -23,6 +25,8 @@ export default () => {
       cantonPartyId: process.env.LOCAL_CANTON_PARTY_ID,
       cantonToken: process.env.LOCAL_CANTON_TOKEN,
       cantonUserId: process.env.LOCAL_CANTON_USER_ID,
+      cantonTokenConfigId: process.env.LOCAL_TOKEN_CONFIG_ID,
+      cantonBridgeStateId: process.env.LOCAL_BRIDGE_STATE_ID,
     },
     prod: {
       databaseUrl: process.env.PROD_DATABASE_URL,
@@ -32,6 +36,8 @@ export default () => {
       cantonPartyId: process.env.PROD_CANTON_PARTY_ID,
       cantonToken: process.env.PROD_CANTON_TOKEN,
       cantonUserId: process.env.PROD_CANTON_USER_ID,
+      cantonTokenConfigId: process.env.PROD_TOKEN_CONFIG_ID,
+      cantonBridgeStateId: process.env.PROD_BRIDGE_STATE_ID,
     },
   };
 
@@ -62,6 +68,9 @@ export default () => {
       token: profile.cantonToken,
       userId: profile.cantonUserId ?? 'sandbox',
       tokenDecimals: parseInt(process.env.CANTON_TOKEN_DECIMALS ?? '6', 10),
+      // CIP-56 contract IDs (populated by local-setup.sh / prod deploy)
+      tokenConfigId: profile.cantonTokenConfigId,
+      bridgeStateId: profile.cantonBridgeStateId,
     },
   };
 };

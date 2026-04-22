@@ -28,11 +28,18 @@ export class BridgeTransaction {
   @Column({ type: 'numeric', precision: 78, scale: 0 })
   amount: string;
 
+  // For CantonBridge deposits: stores the bytes32 fingerprint hex.
+  // For legacy Gateway locks: stores the full Canton party ID string.
   @Column({ type: 'text' })
   recipient: string;
 
-  @Column({ name: 'to_chain', type: 'varchar', length: 66 })
-  toChain: string;
+  // For CantonBridge deposits: stores the EVM depositor address.
+  @Column({ name: 'depositor', type: 'varchar', length: 42, nullable: true })
+  depositor: string | null;
+
+  // For legacy Gateway locks: keccak256 chain identifier. Null for CantonBridge deposits.
+  @Column({ name: 'to_chain', type: 'varchar', length: 66, nullable: true })
+  toChain: string | null;
 
   @Column({ name: 'block_number', type: 'bigint' })
   blockNumber: string;
