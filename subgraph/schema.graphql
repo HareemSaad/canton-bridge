@@ -1,10 +1,39 @@
+# ── CantonBridge events ────────────────────────────────────────────────────────
+
+# One record per DepositToCanton event (EVM → Canton direction).
+type Deposit @entity(immutable: true) {
+  id: String!             # txHash-logIndex
+  token: Bytes!           # ERC-20 token address
+  user: Bytes!            # depositing EVM address
+  amount: BigInt!         # raw token units
+  fingerprint: Bytes!     # bytes32 Canton party fingerprint
+  nonce: BigInt!          # per-(user,token) deposit nonce
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+# One record per TokenRegistered event (mutable — active flag can change).
+type TokenRegistration @entity {
+  id: String!             # token address (hex)
+  token: Bytes!
+  symbol: String!
+  cip56Id: String!
+  active: Boolean!
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  transactionHash: Bytes!
+}
+
+# ── Legacy Gateway events (kept for historical indexing) ────────────────────────
+
 type Lock @entity(immutable: true) {
-  id: String!          # nonce as string
+  id: String!             # nonce as string
   nonce: BigInt!
-  token: Bytes!        # token address
+  token: Bytes!
   amount: BigInt!
   recipient: String!
-  toChain: Bytes!      # keccak256 chain identifier
+  toChain: Bytes!
   blockNumber: BigInt!
   blockTimestamp: BigInt!
   transactionHash: Bytes!
