@@ -1,13 +1,65 @@
 module Main where
 
 import Daml.Script
+import DA.TextMap qualified as TextMap
 
--- | Allocate bridge parties on startup.
--- The complex BridgeReceiver → Mint flow is exercised by the relayer at runtime,
--- not in the init script, to avoid Canton sandbox bootstrap failures.
+import CIP56.Token
+import CIP56.Config
+import Bridge.State
+
+-- | Bootstrap data returned by setup for use in tests and the relayer .env.
+data SetupResult = SetupResult
+  with
+    bridgeOperator  : Party
+    user1           : Party
+    user2           : Party
+    managerId       : ContractId CIP56Manager
+    tokenConfigId   : ContractId TokenConfig
+    bridgeStateId   : ContractId BridgeState
+  deriving (Show)
+
+-- | Allocate parties and initialise all production bridge contracts.
+--   Called automatically by `daml sandbox` via init-script in daml.yaml.
+--   The contract IDs are printed so local-setup.sh can parse them.
 setup : Script ()
 setup = do
-  _operator <- allocatePartyByHint (PartyIdHint "BridgeOperator")
-  _user1    <- allocatePartyByHint (PartyIdHint "User1")
-  _user2    <- allocatePartyByHint (PartyIdHint "User2")
-  debug "Parties allocated: BridgeOperator, User1, User2"
+  -- ── parties ──────────────────────────────────────────────────────────────
+  operator <- allocatePartyByHint (PartyIdHint "BridgeOperator")
+  user1    <- allocatePartyByHint (PartyIdHint "User1")
+  user2    <- allocatePartyByHint (PartyIdHint "User2")
+
+  -- ── CIP-56 token supply manager ──────────────────────────────────────────
+  managerId <- submit operator do
+    createCmd CIP56Manager with issuer = operator
+
+  -- ── TokenConfig (mint/burn authority with audit) ──────────────────────────
+  tokenConfigId <- submit operator do
+    createCmd TokenConfig with
+      issuer         = operator
+      managerId      = managerId
+      instrumentId   = "MockUSDC::canton"
+      auditObservers = []
+      metadata       = TextMap.fromList
+        [ ("token.name",    "Mock USDC")
+        , ("token.symbol",  "mUSDC")
+        , ("token.decimals", "6")
+        ]
+
+  -- ── BridgeState (replay protection) ──────────────────────────────────────
+  bridgeStateId <- submit operator do
+    createCmd BridgeState with
+      bridgeOperator    = operator
+      processedTxHashes = []
+
+  -- ── print IDs for local-setup.sh to parse ────────────────────────────────
+  -- FingerprintMappings are NOT created here; local-setup.sh creates them
+  -- directly via the Canton API after computing keccak256 fingerprints,
+  -- avoiding the Remove+Create round-trip caused by placeholder values.
+  debug $ "BRIDGE_OPERATOR=" <> show operator
+  debug $ "USER1_PARTY="     <> show user1
+  debug $ "USER2_PARTY="     <> show user2
+  debug $ "TOKEN_CONFIG_ID=" <> show tokenConfigId
+  debug $ "BRIDGE_STATE_ID=" <> show bridgeStateId
+
+  debug "Canton bridge initialised: CIP56Manager, TokenConfig, BridgeState"
+  return ()
