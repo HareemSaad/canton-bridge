@@ -1,0 +1,105 @@
+-- | CIP-56 compliant token holding templates.
+--
+-- Adapted from the ChainSafe canton-erc20 reference implementation.
+-- CIP56Holding is the on-ledger UTXO-style token balance.
+-- CIP56Manager controls the token supply (mint / burn).
+module CIP56.Token where
+
+import DA.TextMap (TextMap)
+import qualified DA.TextMap as TextMap
+
+-- | A single token balance owned by one party.
+--   Each holding is a separate on-ledger contract (UTXO model).
+template CIP56Holding
+  with
+    issuer       : Party            -- ^ Token registry / bridge operator (signatory)
+    owner        : Party            -- ^ Current holder (observer)
+    amount       : Decimal          -- ^ Balance (positive, in token's decimal precision)
+    instrumentId : Text             -- ^ CIP-56 instrument identifier (e.g. "MockUSDC::canton")
+    locked       : Optional Text    -- ^ Non-None while the holding is locked (reason text)
+    metadata     : TextMap Text     -- ^ Extensible key-value metadata
+  where
+    signatory issuer
+    observer  owner
+    ensure    amount > 0.0
+
+    -- | Split into two holdings.  New amounts must sum to original.
+    choice Split
+      : (ContractId CIP56Holding, ContractId CIP56Holding)
+      with splitAmount : Decimal
+      controller owner
+      do
+        assertMsg "Split amount must be positive" (splitAmount > 0.0)
+        assertMsg "Split amount must be less than total" (splitAmount < amount)
+        assertMsg "Holding is locked" (locked == None)
+        a <- create this with amount = splitAmount
+        b <- create this with amount = amount - splitAmount
+        return (a, b)
+
+    -- | Merge another holding of the same instrument into this one.
+    choice Merge
+      : ContractId CIP56Holding
+      with otherId : ContractId CIP56Holding
+      controller owner
+      do
+        other <- fetch otherId
+        assertMsg "Issuers must match"       (other.issuer       == issuer)
+        assertMsg "Owners must match"        (other.owner        == owner)
+        assertMsg "InstrumentIds must match" (other.instrumentId == instrumentId)
+        assertMsg "Other holding is locked"  (other.locked       == None)
+        assertMsg "This holding is locked"   (locked             == None)
+        archive otherId
+        create this with amount = amount + other.amount
+
+    -- | Transfer ownership to a new party.
+    choice Transfer
+      : ContractId CIP56Holding
+      with newOwner : Party
+      controller owner
+      do
+        assertMsg "Holding is locked" (locked == None)
+        create this with owner = newOwner
+
+    -- | Permanently destroy this holding (called by the issuer on Canton→EVM burns).
+    choice Burn
+      : ()
+      controller issuer
+      do return ()
+
+-- | Manages the token supply for a single CIP-56 instrument.
+--   The bridge operator exercises Mint to issue new holdings upon deposit,
+--   and Burn to destroy holdings upon EVM withdrawal.
+template CIP56Manager
+  with
+    issuer : Party  -- ^ Bridge operator (sole signatory)
+  where
+    signatory issuer
+
+    -- | Create a new CIP56Holding for `recipient`.
+    nonconsuming choice Mint
+      : ContractId CIP56Holding
+      with
+        recipient    : Party
+        amount       : Decimal
+        instrumentId : Text
+        meta         : TextMap Text
+      controller issuer
+      do
+        assertMsg "Mint amount must be positive" (amount > 0.0)
+        create CIP56Holding with
+          issuer       = issuer
+          owner        = recipient
+          amount       = amount
+          instrumentId = instrumentId
+          locked       = None
+          metadata     = meta
+
+    -- | Archive an existing holding (supply reduction).
+    nonconsuming choice BurnHolding
+      : ()
+      with holdingId : ContractId CIP56Holding
+      controller issuer
+      do
+        holding <- fetch holdingId
+        assertMsg "Issuer mismatch on burn" (holding.issuer == issuer)
+        archive holdingId

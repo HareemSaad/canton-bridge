@@ -1,0 +1,39 @@
+-- | Unified audit event for all token operations (mint, burn, transfer).
+--
+-- Mirrors the ERC-20 Transfer(from, to, value) event pattern:
+--   Mint:     fromParty = None,       toParty = Some recipient
+--   Burn:     fromParty = Some owner, toParty = None
+--   Transfer: fromParty = Some sender, toParty = Some receiver
+module CIP56.Events where
+
+import DA.TextMap (TextMap)
+import qualified DA.TextMap as TextMap
+
+-- | Single immutable audit record for any token movement.
+template TokenTransferEvent
+  with
+    issuer       : Party           -- ^ Token issuer / bridge operator (signatory)
+    fromParty    : Optional Party  -- ^ Source (None for mints)
+    toParty      : Optional Party  -- ^ Destination (None for burns)
+    amount       : Decimal
+    instrumentId : Text
+    meta         : TextMap Text    -- ^ Bridge metadata:
+                                   --   "bridge.externalTxId"    → EVM tx hash
+                                   --   "bridge.userFingerprint" → EVM bytes32 fingerprint (hex)
+                                   --   "bridge.chainRef"        → source chain name
+  where
+    signatory issuer
+    observer (concat
+      [ case fromParty of None -> []; Some p -> [p]
+      , case toParty   of None -> []; Some p -> [p]
+      ])
+    ensure amount > 0.0
+
+-- | Build a mint event metadata map.
+mintMeta : Text -> Text -> Text -> TextMap Text
+mintMeta txHash fingerprint chainRef =
+  TextMap.fromList
+    [ ("bridge.externalTxId",    txHash)
+    , ("bridge.userFingerprint", fingerprint)
+    , ("bridge.chainRef",        chainRef)
+    ]

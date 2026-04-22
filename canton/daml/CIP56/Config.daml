@@ -1,0 +1,100 @@
+-- | TokenConfig: the central mint/burn authority with audit logging.
+--
+-- All bridge minting goes through IssuerMint which:
+--   1. Exercises CIP56Manager.Mint to create the holding
+--   2. Creates a TokenTransferEvent for the immutable audit trail
+module CIP56.Config where
+
+import CIP56.Token
+import CIP56.Events
+import DA.TextMap (TextMap)
+import qualified DA.TextMap as TextMap
+
+-- | Configuration contract for one CIP-56 instrument.
+--   The relayer submits IssuerMint for each validated deposit.
+template TokenConfig
+  with
+    issuer         : Party                -- ^ Bridge operator (sole signatory)
+    managerId      : ContractId CIP56Manager
+    instrumentId   : Text                 -- ^ CIP-56 instrument identifier
+    auditObservers : [Party]              -- ^ Optional compliance / audit parties
+    metadata       : TextMap Text         -- ^ Token-level metadata
+  where
+    signatory issuer
+    observer  auditObservers
+
+    -- | Mint CIP56Holding for `recipient` and record an audit event.
+    nonconsuming choice IssuerMint
+      : ContractId CIP56Holding
+      with
+        recipient   : Party
+        amount      : Decimal
+        externalTxHash : Text   -- EVM transaction hash (for audit and dedup)
+        fingerprint : Text      -- EVM bytes32 fingerprint of recipient (hex)
+        chainRef    : Text      -- Source chain name (e.g. "plasma")
+      controller issuer
+      do
+        assertMsg "Mint amount must be positive" (amount > 0.0)
+
+        holdingId <- exercise managerId Mint with
+          recipient    = recipient
+          amount       = amount
+          instrumentId = instrumentId
+          meta         = mintMeta externalTxHash fingerprint chainRef
+
+        create TokenTransferEvent with
+          issuer       = issuer
+          fromParty    = None
+          toParty      = Some recipient
+          amount       = amount
+          instrumentId = instrumentId
+          meta         = mintMeta externalTxHash fingerprint chainRef
+
+        return holdingId
+
+    -- | Burn an existing holding (Canton → EVM withdrawal).
+    nonconsuming choice IssuerBurn
+      : ()
+      with
+        holdingId    : ContractId CIP56Holding
+        externalTxHash : Text
+      controller issuer
+      do
+        holding <- fetch holdingId
+        assertMsg "Issuer mismatch on burn" (holding.issuer == issuer)
+
+        exercise managerId BurnHolding with holdingId = holdingId
+
+        create TokenTransferEvent with
+          issuer       = issuer
+          fromParty    = Some holding.owner
+          toParty      = None
+          amount       = holding.amount
+          instrumentId = instrumentId
+          meta         = TextMap.fromList [("bridge.externalTxId", externalTxHash)]
+
+        return ()
+
+    -- | Update token-level metadata.
+    choice SetMetadata
+      : ContractId TokenConfig
+      with newMeta : TextMap Text
+      controller issuer
+      do create this with metadata = newMeta
+
+    -- | Add an audit observer.
+    choice AddAuditObserver
+      : ContractId TokenConfig
+      with observer_ : Party
+      controller issuer
+      do
+        let existing = filter (== observer_) auditObservers
+        assertMsg "Observer already added" (null existing)
+        create this with auditObservers = observer_ :: auditObservers
+
+    -- | Remove an audit observer.
+    choice RemoveAuditObserver
+      : ContractId TokenConfig
+      with observer_ : Party
+      controller issuer
+      do create this with auditObservers = filter (/= observer_) auditObservers

@@ -1,0 +1,27 @@
+-- | BridgeState: replay protection for the Canton side.
+--
+-- Every successfully relayed EVM transaction hash is recorded here.
+-- MintCommand.Execute checks BridgeState before minting, preventing
+-- the same deposit from being processed twice even if the relayer
+-- submits duplicate commands.
+module Bridge.State where
+
+-- | Mutable state contract owned by the bridge operator.
+--   Tracks all EVM transaction hashes that have already been minted.
+template BridgeState
+  with
+    bridgeOperator    : Party
+    processedTxHashes : [Text]  -- ^ Grows with each processed deposit
+  where
+    signatory bridgeOperator
+
+    -- | Record a new processed tx hash.  Reverts if already present.
+    choice RecordMint
+      : ContractId BridgeState
+      with txHash : Text
+      controller bridgeOperator
+      do
+        assertMsg
+          ("Bridge replay detected: tx already processed: " <> txHash)
+          (txHash `notElem` processedTxHashes)
+        create this with processedTxHashes = txHash :: processedTxHashes

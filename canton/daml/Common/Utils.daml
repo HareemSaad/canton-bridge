@@ -1,0 +1,25 @@
+-- | Shared validation helpers.
+module Common.Utils where
+
+import DA.Text (length)
+import Common.Types
+
+-- | True if amount is strictly positive.
+isValidAmount : Decimal -> Bool
+isValidAmount amount = amount > 0.0
+
+-- | True if balance covers the required amount.
+hasSufficientBalance : Decimal -> Decimal -> Bool
+hasSufficientBalance balance required = balance >= required
+
+-- | True if the text looks like an EVM address (0x + 40 hex chars).
+isValidEvmAddress : Text -> Bool
+isValidEvmAddress addr =
+  let len = DA.Text.length addr
+  in len == 42
+
+-- | Wrap a text string in EvmAddress after validating it.
+mkEvmAddress : Text -> Optional EvmAddress
+mkEvmAddress addr
+  | isValidEvmAddress addr = Some (EvmAddress addr)
+  | otherwise              = None

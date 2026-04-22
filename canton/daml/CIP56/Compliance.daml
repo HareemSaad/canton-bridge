@@ -1,0 +1,48 @@
+-- | Optional compliance / KYC framework.
+--
+-- ComplianceRules can optionally gate IssuerMint by requiring that the
+-- recipient holds a valid ComplianceProof issued by the bridge operator.
+-- Not enforced by default — set isWhitelistEnabled = True to activate.
+module CIP56.Compliance where
+
+-- | Per-instrument compliance configuration.
+template ComplianceRules
+  with
+    issuer             : Party
+    isWhitelistEnabled : Bool
+    observers          : [Party]
+  where
+    signatory issuer
+    observer  observers
+
+    -- | Enable or disable the whitelist requirement.
+    choice ToggleWhitelist
+      : ContractId ComplianceRules
+      with enable : Bool
+      controller issuer
+      do create this with isWhitelistEnabled = enable
+
+    -- | Verify that a proof is valid for this issuer and a given user.
+    nonconsuming choice ValidateProof
+      : Bool
+      with
+        proofId  : ContractId ComplianceProof
+        user     : Party
+      controller issuer
+      do
+        proof <- fetch proofId
+        return (proof.issuer == issuer && proof.user == user)
+
+-- | Issued to a KYC-approved user by the bridge operator.
+template ComplianceProof
+  with
+    issuer : Party  -- ^ Bridge operator (signatory)
+    user   : Party  -- ^ Approved Canton party (signatory & observer)
+  where
+    signatory issuer, user
+    observer  user
+
+    -- | Issuer can revoke approval at any time.
+    choice Revoke : ()
+      controller issuer
+      do return ()

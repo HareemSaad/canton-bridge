@@ -1,0 +1,71 @@
+-- | Maps EVM address fingerprints to Canton party IDs.
+--
+-- When a user deposits on Plasma they supply a bytes32 `fingerprint` extracted
+-- from their Canton party ID (the hex suffix after "::").  The bridge operator
+-- maintains a FingerprintMapping contract for each registered user so the
+-- relayer can resolve fingerprint → Canton Party without users ever needing
+-- to manage Canton keys directly.
+module Common.FingerprintAuth where
+
+-- | One entry per registered bridge user.
+--   The relayer resolves an incoming EVM fingerprint to `userParty` by
+--   querying active FingerprintMapping contracts.
+template FingerprintMapping
+  with
+    issuer     : Party   -- ^ Bridge operator (signatory, maintains this contract)
+    userParty  : Party   -- ^ Canton party that maps to `fingerprint`
+    fingerprint: Text    -- ^ Hex string matching the bytes32 passed on EVM (no "0x" prefix)
+    evmAddress : Optional Text  -- ^ Optional EVM address of the user (informational)
+  where
+    signatory issuer
+    observer  userParty
+
+    -- | Update the EVM address association (e.g. if user rotates wallet).
+    choice UpdateEvmAddress : ContractId FingerprintMapping
+      with newEvmAddress : Optional Text
+      controller issuer
+      do create this with evmAddress = newEvmAddress
+
+    -- | Remove this mapping (e.g. user offboarded).
+    choice Remove : ()
+      controller issuer
+      do return ()
+
+-- | One-shot intent contract created by the relayer when it detects a
+--   DepositToCanton event.  Processing resolves the fingerprint and mints.
+template PendingDeposit
+  with
+    issuer      : Party   -- ^ Bridge operator
+    fingerprint : Text    -- ^ From the EVM DepositToCanton event
+    txHash      : Text    -- ^ EVM transaction hash (deduplication key)
+    amount      : Decimal -- ^ Token amount (in Canton decimal precision)
+  where
+    signatory issuer
+    ensure amount > 0.0
+
+    -- | Resolve the fingerprint and produce a DepositReceipt.
+    --   The relayer calls this once it has looked up the FingerprintMapping.
+    choice ProcessDeposit
+      : ContractId DepositReceipt
+      with mappingId : ContractId FingerprintMapping
+      controller issuer
+      do
+        mapping <- fetch mappingId
+        assertMsg "Fingerprint mismatch" (mapping.fingerprint == fingerprint)
+        create DepositReceipt with
+          issuer    = issuer
+          recipient = mapping.userParty
+          amount    = amount
+          txHash    = txHash
+
+-- | Immutable record produced after a successful deposit resolution.
+--   Serves as an audit trail entry.
+template DepositReceipt
+  with
+    issuer    : Party
+    recipient : Party
+    amount    : Decimal
+    txHash    : Text
+  where
+    signatory issuer
+    observer  recipient

@@ -1,0 +1,27 @@
+-- | Shared types used across the Canton bridge.
+module Common.Types where
+
+-- | A validated EVM address (42 chars, "0x" prefix + 40 hex digits).
+newtype EvmAddress = EvmAddress Text
+  deriving (Eq, Ord, Show)
+
+-- | Reference to a cross-chain event.
+data ChainRef = ChainRef
+  with
+    chainName : Text  -- e.g. "plasma"
+    eventId   : Text  -- EVM transaction hash
+  deriving (Eq, Ord, Show)
+
+-- | Direction of a bridge operation.
+data BridgeDirection
+  = ToCanton  -- EVM → Canton
+  | ToEvm     -- Canton → EVM
+  deriving (Eq, Ord, Show)
+
+-- | Snapshot of EVM token metadata stored on Canton for auditing.
+data TokenMeta = TokenMeta
+  with
+    name     : Text
+    symbol   : Text
+    decimals : Int
+  deriving (Eq, Ord, Show)

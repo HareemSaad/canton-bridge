@@ -1,0 +1,112 @@
+-- | Core bridge contracts for the Plasma → Canton direction.
+--
+-- MintCommand is created and immediately exercised by the relayer for each
+-- validated DepositToCanton event.  It atomically:
+--   1. Records the EVM tx hash in BridgeState (replay guard)
+--   2. Mints a CIP56Holding via TokenConfig.IssuerMint (creates audit event)
+module Bridge.Contracts where
+
+import Bridge.State
+import CIP56.Config
+import CIP56.Token
+
+-- | One-shot command created and exercised by the relayer for each deposit.
+template MintCommand
+  with
+    issuer        : Party                    -- ^ Bridge operator
+    recipient     : Party                    -- ^ Canton party receiving the holding
+    amount        : Decimal
+    txHash        : Text                     -- ^ EVM transaction hash (dedup key)
+    fingerprint   : Text                     -- ^ EVM bytes32 fingerprint (hex, no 0x)
+    chainRef      : Text                     -- ^ Source chain (e.g. "plasma")
+    tokenConfigId : ContractId TokenConfig
+    bridgeStateId : ContractId BridgeState
+  where
+    signatory issuer
+    ensure    amount > 0.0
+
+    -- | Execute: replay-guard → mint → return holding contract ID.
+    choice Execute
+      : ContractId CIP56Holding
+      with dummy : ()
+      controller issuer
+      do
+        -- 1. Record tx hash (reverts if duplicate)
+        newStateId <- exercise bridgeStateId RecordMint with txHash = txHash
+
+        -- 2. Mint CIP-56 holding with audit trail
+        holdingId <- exercise tokenConfigId IssuerMint with
+          recipient      = recipient
+          amount         = amount
+          externalTxHash = txHash
+          fingerprint    = fingerprint
+          chainRef       = chainRef
+
+        return holdingId
+
+-- | Withdrawal intent created by the user on Canton before claiming EVM tokens.
+--   The relayer monitors these events and submits a withdrawal proof on Plasma.
+template WithdrawalRequest
+  with
+    issuer       : Party
+    user         : Party               -- ^ Canton party burning their holding
+    holdingId    : ContractId CIP56Holding
+    amount       : Decimal
+    evmRecipient : Text                -- ^ Target EVM address (hex)
+    fingerprint  : Text
+  where
+    signatory issuer
+    observer  user
+
+    -- | Burn the holding and emit a WithdrawalEvent.
+    choice Withdraw
+      : ContractId WithdrawalEvent
+      with tokenConfigId : ContractId TokenConfig
+      controller issuer
+      do
+        holding <- fetch holdingId
+        assertMsg "Holding owner mismatch"  (holding.owner  == user)
+        assertMsg "Holding amount mismatch" (holding.amount == amount)
+
+        exercise tokenConfigId IssuerBurn with
+          holdingId      = holdingId
+          externalTxHash = evmRecipient  -- placeholder until EVM tx is confirmed
+
+        create WithdrawalEvent with
+          issuer       = issuer
+          user         = user
+          amount       = amount
+          evmRecipient = evmRecipient
+          fingerprint  = fingerprint
+          status       = WithdrawalPending
+
+-- | Mutable state for a withdrawal tracked by the relayer.
+data WithdrawalStatus
+  = WithdrawalPending
+  | WithdrawalCompleted Text  -- ^ holds EVM tx hash on completion
+  | WithdrawalFailed    Text  -- ^ holds error reason
+  deriving (Eq, Show)
+
+template WithdrawalEvent
+  with
+    issuer       : Party
+    user         : Party
+    amount       : Decimal
+    evmRecipient : Text
+    fingerprint  : Text
+    status       : WithdrawalStatus
+  where
+    signatory issuer
+    observer  user
+
+    choice Complete
+      : ContractId WithdrawalEvent
+      with evmTxHash : Text
+      controller issuer
+      do create this with status = WithdrawalCompleted evmTxHash
+
+    choice Fail
+      : ContractId WithdrawalEvent
+      with reason : Text
+      controller issuer
+      do create this with status = WithdrawalFailed reason
