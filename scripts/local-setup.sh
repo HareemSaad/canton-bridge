@@ -11,7 +11,7 @@ CANTON_DIR="$ROOT/canton"
 FORK_RPC="https://plasma-testnet.g.alchemy.com/v2/3zFAX-i0bLU7ZfCipH2EuDW02tB51Mt9"
 LOCAL_RPC="http://localhost:8545"
 ANVIL_PORT=8545
-SUBGRAPH_NAME="gateway-local"
+SUBGRAPH_NAME="canton-bridge-local"
 GRAPH_ADMIN="http://localhost:8020"
 GRAPH_IPFS="http://localhost:5001"
 GRAPH_QUERY="http://localhost:8000"
@@ -54,6 +54,15 @@ sys.exit(0 if syncs else 1)
   ok "Canton synchronizer connected"
 }
 
+canton_submit() {
+  # Usage: canton_submit <commandId> <actor_party> <json_commands_array>
+  local cmd_id=$1 actor=$2 cmds=$3
+  curl -sf -X POST "http://localhost:${CANTON_JSON_API_PORT}/v2/commands/submit-and-wait" \
+    -H "Content-Type: application/json" \
+    -d "{\"actAs\":[\"$actor\"],\"userId\":\"sandbox\",\"commandId\":\"$cmd_id\",\"commands\":$cmds}" \
+    > /dev/null
+}
+
 cleanup() {
   if [[ -n "${ANVIL_PID:-}" ]]; then
     log "Stopping Anvil (PID $ANVIL_PID)..."
@@ -87,7 +96,7 @@ wait_for_port "Anvil" "$ANVIL_PORT"
 CHAIN_ID=$(cast chain-id --rpc-url "$LOCAL_RPC")
 ok "Anvil running — chain ID: $CHAIN_ID  (PID $ANVIL_PID)"
 
-# ─── 2. fund deployer & deploy gateway ───────────────────────────────────────
+# ─── 2. fund deployer + deploy CantonBridge stack ─────────────────────────────
 DEPLOYER=$(cast wallet address --private-key "$PRIVATE_KEY" 2>/dev/null || \
            python3 -c "from eth_account import Account; print(Account.from_key('$PRIVATE_KEY').address)" 2>/dev/null || \
            cast wallet address "$PRIVATE_KEY")
@@ -95,23 +104,32 @@ DEPLOYER=$(cast wallet address --private-key "$PRIVATE_KEY" 2>/dev/null || \
 log "Funding deployer $DEPLOYER with 100 ETH..."
 cast rpc anvil_setBalance "$DEPLOYER" 0x56BC75E2D63100000 --rpc-url "$LOCAL_RPC" > /dev/null
 
-log "Deploying Gateway contract..."
+log "Deploying CantonBridge + TokenRegistry + MockUSDC..."
 cd "$PLASMA_DIR"
 
-forge script script/Gateway.s.sol:DeployScript \
+# Deployer also acts as relayer for local testing
+RELAYER_ADDRESS="$DEPLOYER" CIP56_INSTRUMENT="MockUSDC::canton" \
+forge script script/CantonBridge.s.sol:DeployCantonBridge \
   --rpc-url "$LOCAL_RPC" \
   --broadcast \
   2>&1 | tee /tmp/forge-deploy.log
 
-BROADCAST="$PLASMA_DIR/broadcast/Gateway.s.sol/$CHAIN_ID/run-latest.json"
+BROADCAST="$PLASMA_DIR/broadcast/CantonBridge.s.sol/$CHAIN_ID/run-latest.json"
 [[ -f "$BROADCAST" ]] || die "Broadcast file not found: $BROADCAST"
 
-CONTRACT_ADDRESS=$(python3 -c "
+# Extract addresses from broadcast (CREATE transactions in order: registry, bridge, token)
+BRIDGE_ADDRESSES=$(python3 -c "
 import json
 data = json.load(open('$BROADCAST'))
-tx = next(t for t in data['transactions'] if t['transactionType'] == 'CREATE')
-print(tx['contractAddress'])
+creates = [t['contractAddress'] for t in data['transactions'] if t['transactionType'] == 'CREATE']
+print(creates[0])  # TokenRegistry
+print(creates[1])  # CantonBridge
+print(creates[2])  # MockUSDC
 ")
+
+TOKEN_REGISTRY_ADDRESS=$(echo "$BRIDGE_ADDRESSES" | sed -n '1p')
+CANTON_BRIDGE_ADDRESS=$(echo  "$BRIDGE_ADDRESSES" | sed -n '2p')
+MOCK_USDC_ADDRESS=$(echo      "$BRIDGE_ADDRESSES" | sed -n '3p')
 
 BLOCK_HEX=$(python3 -c "
 import json
@@ -120,51 +138,44 @@ print(data['receipts'][0]['blockNumber'])
 ")
 BLOCK_NUMBER=$(printf "%d" "$BLOCK_HEX")
 
-ok "Gateway deployed at $CONTRACT_ADDRESS (block $BLOCK_NUMBER)"
-
-# ─── 2b. deploy mock token + whitelist token and canton chain ─────────────────
-log "Deploying MockERC20 and configuring Gateway whitelist..."
-cd "$PLASMA_DIR"
-
-GATEWAY_ADDRESS="$CONTRACT_ADDRESS" forge script script/SetupTest.s.sol:SetupTest \
-  --rpc-url "$LOCAL_RPC" \
-  --broadcast \
-  2>&1 | tee /tmp/forge-setup.log
-
-SETUP_BROADCAST="$PLASMA_DIR/broadcast/SetupTest.s.sol/$CHAIN_ID/run-latest.json"
-[[ -f "$SETUP_BROADCAST" ]] || die "SetupTest broadcast not found: $SETUP_BROADCAST"
-
-MOCK_TOKEN_ADDRESS=$(python3 -c "
-import json
-data = json.load(open('$SETUP_BROADCAST'))
-tx = next(t for t in data['transactions'] if t['transactionType'] == 'CREATE')
-print(tx['contractAddress'])
-")
-CANTON_CHAIN_ID=$(cast keccak "canton")
-
-ok "MockERC20 deployed at $MOCK_TOKEN_ADDRESS"
-ok "Token + canton chain whitelisted"
+ok "TokenRegistry : $TOKEN_REGISTRY_ADDRESS"
+ok "CantonBridge  : $CANTON_BRIDGE_ADDRESS (block $BLOCK_NUMBER)"
+ok "MockUSDC      : $MOCK_USDC_ADDRESS"
 
 # ─── 3. patch subgraph.yaml ───────────────────────────────────────────────────
-log "Patching subgraph/subgraph.yaml..."
+log "Patching subgraph/subgraph.yaml with CantonBridge address..."
 YAML="$SUBGRAPH_DIR/subgraph.yaml"
 [[ -f "$YAML" ]] || die "subgraph.yaml not found at $YAML"
 
 python3 - <<PYEOF
-import re
+import re, sys
 
 with open('$YAML') as f:
     content = f.read()
 
+# Patch only the CantonBridge data source block (first occurrence)
+# Replace the placeholder address in the CantonBridge section
 content = re.sub(
-    r'address: "0x[0-9a-fA-F]+"(\s*# replace after deployment)?',
-    'address: "$CONTRACT_ADDRESS"',
-    content
+    r'(name: CantonBridge.*?address: )"0x[0-9a-fA-F]+"(\s*# replace after deployment)?',
+    r'\g<1>"$CANTON_BRIDGE_ADDRESS"',
+    content,
+    count=1,
+    flags=re.DOTALL
 )
 content = re.sub(
-    r'startBlock: \d+(\s*# replace with deployment block)?',
-    'startBlock: $BLOCK_NUMBER',
-    content
+    r'(name: CantonBridge.*?startBlock: )\d+(\s*# replace with deployment block)?',
+    r'\g<1>$BLOCK_NUMBER',
+    content,
+    count=1,
+    flags=re.DOTALL
+)
+# Also update Gateway startBlock to avoid scanning from genesis
+content = re.sub(
+    r'(name: Gateway.*?startBlock: )\d+(\s*# same as CantonBridge to avoid scanning from genesis)?',
+    r'\g<1>$BLOCK_NUMBER',
+    content,
+    count=1,
+    flags=re.DOTALL
 )
 
 with open('$YAML', 'w') as f:
@@ -221,7 +232,7 @@ wait_for_canton_ready
 ok "Canton sandbox running (PID $CANTON_PID)"
 
 # ─── 4d. run Canton init script ───────────────────────────────────────────────
-log "Running Canton init script (allocating parties)..."
+log "Running Canton init script (allocating parties + contracts)..."
 cd "$CANTON_DIR"
 daml script \
   --dar "$CANTON_DAR" \
@@ -229,44 +240,79 @@ daml script \
   --ledger-host localhost \
   --ledger-port "$CANTON_GRPC_PORT" \
   --wall-clock-time \
-  > /tmp/canton-script.log 2>&1
+  2>&1 | tee /tmp/canton-script.log
 ok "Canton init script complete"
 
-# ─── 4e. fetch BridgeOperator party ID ───────────────────────────────────────
-log "Fetching BridgeOperator party ID from ledger..."
-BRIDGE_OPERATOR_PARTY=$(daml ledger list-parties \
-  --host localhost \
-  --port "$CANTON_GRPC_PORT" \
-  --json 2>/dev/null | python3 -c "
+# ─── 4e. parse contract IDs from script output ────────────────────────────────
+log "Parsing Canton contract IDs from script output..."
+
+parse_id() {
+  local key=$1
+  python3 -c "
+import re, sys
+with open('/tmp/canton-script.log') as f:
+    content = f.read()
+m = re.search(r'${key}=([0-9a-fA-F][^\"\s\\\\]+)', content)
+print(m.group(1).strip() if m else '')
+"
+}
+
+TOKEN_CONFIG_ID=$(parse_id "TOKEN_CONFIG_ID")
+BRIDGE_STATE_ID=$(parse_id "BRIDGE_STATE_ID")
+
+[[ -n "$TOKEN_CONFIG_ID" ]] || die "Could not parse TOKEN_CONFIG_ID from canton-script.log"
+[[ -n "$BRIDGE_STATE_ID" ]] || die "Could not parse BRIDGE_STATE_ID from canton-script.log"
+
+ok "TOKEN_CONFIG_ID : $TOKEN_CONFIG_ID"
+ok "BRIDGE_STATE_ID : $BRIDGE_STATE_ID"
+
+# ─── 4f. fetch party IDs from ledger ─────────────────────────────────────────
+log "Fetching party IDs from ledger..."
+PARTIES_JSON=$(daml ledger list-parties \
+  --host localhost --port "$CANTON_GRPC_PORT" --json 2>/dev/null)
+
+extract_party() {
+  local hint=$1
+  echo "$PARTIES_JSON" | python3 -c "
 import json, sys
 parties = json.load(sys.stdin)
 for p in parties:
-    party_id = p.get('party') or p.get('identifier', '')
-    if 'BridgeOperator' in party_id:
-        print(party_id)
-        break
-")
-[[ -n "$BRIDGE_OPERATOR_PARTY" ]] || die "Failed to get BridgeOperator party ID — check /tmp/canton.log"
-ok "BridgeOperator: $BRIDGE_OPERATOR_PARTY"
+    pid = p.get('party') or p.get('identifier', '')
+    if '$hint' in pid:
+        print(pid); break
+"
+}
 
-# ─── 4e-ii. fetch User1 party ID (used as e2e test recipient) ─────────────────
-log "Fetching User1 party ID from ledger..."
-USER1_PARTY=$(daml ledger list-parties \
-  --host localhost \
-  --port "$CANTON_GRPC_PORT" \
-  --json 2>/dev/null | python3 -c "
-import json, sys
-parties = json.load(sys.stdin)
-for p in parties:
-    party_id = p.get('party') or p.get('identifier', '')
-    if 'User1' in party_id:
-        print(party_id)
-        break
-")
-[[ -n "$USER1_PARTY" ]] || die "Failed to get User1 party ID — check /tmp/canton.log"
-ok "User1: $USER1_PARTY"
+BRIDGE_OPERATOR_PARTY=$(extract_party "BridgeOperator")
+USER1_PARTY=$(extract_party "User1")
+USER2_PARTY=$(extract_party "User2")
 
-# ─── 4f. write relayer/.env ───────────────────────────────────────────────────
+[[ -n "$BRIDGE_OPERATOR_PARTY" ]] || die "Failed to get BridgeOperator party ID"
+[[ -n "$USER1_PARTY"           ]] || die "Failed to get User1 party ID"
+ok "BridgeOperator : $BRIDGE_OPERATOR_PARTY"
+ok "User1          : $USER1_PARTY"
+ok "User2          : $USER2_PARTY"
+
+# ─── 4g. compute deterministic fingerprints and create FingerprintMappings ───
+# FingerprintMappings are created here (not in Main.daml) so we can use the
+# real keccak256 fingerprints directly — no placeholder Remove+Create round-trip.
+log "Creating FingerprintMappings with keccak256 fingerprints..."
+USER1_FP_BYTES32=$(cast keccak "User1")   # 0xabc...
+USER2_FP_BYTES32=$(cast keccak "User2")
+USER1_FP_HEX="${USER1_FP_BYTES32#0x}"     # strip 0x for Daml Text storage
+USER2_FP_HEX="${USER2_FP_BYTES32#0x}"
+
+TEMPLATE_ID="#canton-bridge:Common.FingerprintAuth:FingerprintMapping"
+
+canton_submit "create-fp-user1" "$BRIDGE_OPERATOR_PARTY" \
+  "[{\"CreateCommand\":{\"templateId\":\"$TEMPLATE_ID\",\"createArguments\":{\"issuer\":\"$BRIDGE_OPERATOR_PARTY\",\"userParty\":\"$USER1_PARTY\",\"fingerprint\":\"$USER1_FP_HEX\",\"evmAddress\":null}}}]"
+ok "User1 FingerprintMapping created (fp=$USER1_FP_BYTES32)"
+
+canton_submit "create-fp-user2" "$BRIDGE_OPERATOR_PARTY" \
+  "[{\"CreateCommand\":{\"templateId\":\"$TEMPLATE_ID\",\"createArguments\":{\"issuer\":\"$BRIDGE_OPERATOR_PARTY\",\"userParty\":\"$USER2_PARTY\",\"fingerprint\":\"$USER2_FP_HEX\",\"evmAddress\":null}}}]"
+ok "User2 FingerprintMapping created (fp=$USER2_FP_BYTES32)"
+
+# ─── 4i. write relayer/.env ───────────────────────────────────────────────────
 log "Writing relayer/.env..."
 cat > "$ROOT/relayer/.env" <<ENVEOF
 MODE=local
@@ -276,18 +322,20 @@ LOCAL_SUBGRAPH_URL=${GRAPH_QUERY}/subgraphs/name/${SUBGRAPH_NAME}
 LOCAL_PLASMA_RPC=${LOCAL_RPC}
 LOCAL_CANTON_URL=http://localhost:${CANTON_JSON_API_PORT}
 LOCAL_CANTON_PARTY_ID=${BRIDGE_OPERATOR_PARTY}
-LOCAL_CANTON_RECIPIENT_ID=${USER1_PARTY}
 LOCAL_CANTON_TOKEN=
 LOCAL_CANTON_USER_ID=sandbox
+LOCAL_TOKEN_CONFIG_ID=${TOKEN_CONFIG_ID}
+LOCAL_BRIDGE_STATE_ID=${BRIDGE_STATE_ID}
 
 PROD_DATABASE_URL=
 PROD_SUBGRAPH_URL=
 PROD_PLASMA_RPC=
 PROD_CANTON_URL=
 PROD_CANTON_PARTY_ID=
-PROD_CANTON_RECIPIENT_ID=
 PROD_CANTON_TOKEN=
 PROD_CANTON_USER_ID=
+PROD_TOKEN_CONFIG_ID=
+PROD_BRIDGE_STATE_ID=
 
 POLL_INTERVAL_MS=30000
 PENDING_CHECK_INTERVAL_MS=60000
@@ -298,7 +346,7 @@ NODE_ENV=development
 ENVEOF
 ok "Wrote relayer/.env"
 
-# ─── 5. codegen + build ───────────────────────────────────────────────────────
+# ─── 5. codegen + build subgraph ──────────────────────────────────────────────
 log "Installing subgraph dependencies..."
 cd "$SUBGRAPH_DIR"
 npm install --silent
@@ -311,7 +359,7 @@ npm run build
 
 # ─── 6. create + deploy subgraph ─────────────────────────────────────────────
 log "Creating subgraph on local node..."
-npm run create:local || true
+npx graph create --node "$GRAPH_ADMIN" "$SUBGRAPH_NAME" 2>/dev/null || true
 
 log "Deploying subgraph..."
 npx graph deploy \
@@ -322,18 +370,21 @@ npx graph deploy \
 
 # ─── done ─────────────────────────────────────────────────────────────────────
 echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  Gateway      : $CONTRACT_ADDRESS"
-echo "  MockERC20    : $MOCK_TOKEN_ADDRESS"
-echo "  Canton chain : $CANTON_CHAIN_ID"
-echo "  Chain ID     : $CHAIN_ID  |  Block: $BLOCK_NUMBER"
-echo "  GraphQL      : $GRAPH_QUERY/subgraphs/name/$SUBGRAPH_NAME"
-echo "  Relayer DB   : postgresql://$RELAYER_DB_USER:$RELAYER_DB_PASS@localhost:$RELAYER_DB_PORT/$RELAYER_DB_NAME"
-echo "  Canton gRPC  : localhost:$CANTON_GRPC_PORT"
-echo "  Canton HTTP  : http://localhost:$CANTON_JSON_API_PORT"
-echo "  BridgeOp     : $BRIDGE_OPERATOR_PARTY"\
-  echo "  User1        : $USER1_PARTY"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  CantonBridge  : $CANTON_BRIDGE_ADDRESS"
+echo "  TokenRegistry : $TOKEN_REGISTRY_ADDRESS"
+echo "  MockUSDC      : $MOCK_USDC_ADDRESS"
+echo "  Chain ID      : $CHAIN_ID  |  Start block: $BLOCK_NUMBER"
+echo "  GraphQL       : $GRAPH_QUERY/subgraphs/name/$SUBGRAPH_NAME"
+echo "  Relayer DB    : postgresql://$RELAYER_DB_USER:$RELAYER_DB_PASS@localhost:$RELAYER_DB_PORT/$RELAYER_DB_NAME"
+echo "  Canton gRPC   : localhost:$CANTON_GRPC_PORT"
+echo "  Canton HTTP   : http://localhost:$CANTON_JSON_API_PORT"
+echo "  BridgeOp      : $BRIDGE_OPERATOR_PARTY"
+echo "  User1         : $USER1_PARTY"
+echo "  User1 fp      : $USER1_FP_BYTES32"
+echo "  TokenConfig   : $TOKEN_CONFIG_ID"
+echo "  BridgeState   : $BRIDGE_STATE_ID"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "  Next steps:"
 echo "  1. cd relayer && yarn install && yarn start:dev"

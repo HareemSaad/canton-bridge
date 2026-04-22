@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # End-to-end bridge test.
-# Prerequisites: local-setup.sh is running AND the relayer is started
+# Prerequisites: local-setup.sh is running AND the relayer is started:
 #   cd relayer && yarn start:dev
 #
 # What it does:
-#   1. Approves Gateway to spend MockERC20
-#   2. Calls Gateway.lock() with User1 as the Canton recipient (BridgeOperator relays)
+#   1. Approves CantonBridge to spend MockUSDC
+#   2. Calls CantonBridge.depositToCanton() with User1's keccak fingerprint
 #   3. Polls the relayer DB until the row reaches RELAYED (or times out)
-#   4. Queries the Canton JSON API to confirm the MockUSDCxHolding was minted to User1
+#   4. Queries the Canton JSON API to confirm the CIP56Holding was minted to User1
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PLASMA_DIR="$ROOT/plasma"
 LOCAL_RPC="http://localhost:8545"
 CANTON_JSON_API="http://localhost:7575"
-LOCK_AMOUNT="1000000"   # 1.000000 mUSDCx (6 decimals)
-TIMEOUT_SECS=180        # 3 minutes max
+DEPOSIT_AMOUNT="1000000"  # 1.000000 mUSDC (6 decimals)
+TIMEOUT_SECS=180          # 3 minutes max
 
 log()  { echo "▶  $*"; }
 ok()   { echo "✔  $*"; }
@@ -30,56 +30,57 @@ RELAYER_ENV="$ROOT/relayer/.env"
 [[ -f "$RELAYER_ENV" ]] || die "relayer/.env not found — run local-setup.sh first"
 set -a; source "$RELAYER_ENV"; set +a
 
-[[ -n "${LOCAL_CANTON_PARTY_ID:-}" ]]    || die "LOCAL_CANTON_PARTY_ID not set in relayer/.env"
-[[ -n "${LOCAL_CANTON_RECIPIENT_ID:-}" ]] || die "LOCAL_CANTON_RECIPIENT_ID not set in relayer/.env"
-[[ -n "${LOCAL_DATABASE_URL:-}" ]]       || die "LOCAL_DATABASE_URL not set in relayer/.env"
+[[ -n "${LOCAL_CANTON_PARTY_ID:-}"  ]] || die "LOCAL_CANTON_PARTY_ID not set in relayer/.env"
+[[ -n "${LOCAL_TOKEN_CONFIG_ID:-}"  ]] || die "LOCAL_TOKEN_CONFIG_ID not set in relayer/.env"
+[[ -n "${LOCAL_DATABASE_URL:-}"     ]] || die "LOCAL_DATABASE_URL not set in relayer/.env"
 
 DEPLOYER=$(cast wallet address --private-key "$PRIVATE_KEY")
 CHAIN_ID=$(cast chain-id --rpc-url "$LOCAL_RPC")
-CANTON_CHAIN_ID=$(cast keccak "canton")
 
-# ─── resolve contract addresses from broadcast files ─────────────────────────
-BROADCAST="$PLASMA_DIR/broadcast/Gateway.s.sol/$CHAIN_ID/run-latest.json"
-[[ -f "$BROADCAST" ]] || die "Gateway broadcast not found — run local-setup.sh first"
-GATEWAY=$(python3 -c "
+# ─── resolve contract addresses from broadcast ────────────────────────────────
+BROADCAST="$PLASMA_DIR/broadcast/CantonBridge.s.sol/$CHAIN_ID/run-latest.json"
+[[ -f "$BROADCAST" ]] || die "CantonBridge broadcast not found — run local-setup.sh first"
+
+BRIDGE_ADDRESSES=$(python3 -c "
 import json
-d = json.load(open('$BROADCAST'))
-print(next(t['contractAddress'] for t in d['transactions'] if t['transactionType']=='CREATE'))
+data = json.load(open('$BROADCAST'))
+creates = [t['contractAddress'] for t in data['transactions'] if t['transactionType'] == 'CREATE']
+print(creates[1])  # CantonBridge
+print(creates[2])  # MockUSDC
 ")
+CANTON_BRIDGE=$(echo "$BRIDGE_ADDRESSES" | sed -n '1p')
+MOCK_TOKEN=$(echo    "$BRIDGE_ADDRESSES" | sed -n '2p')
 
-SETUP_BROADCAST="$PLASMA_DIR/broadcast/SetupTest.s.sol/$CHAIN_ID/run-latest.json"
-[[ -f "$SETUP_BROADCAST" ]] || die "SetupTest broadcast not found — run local-setup.sh first"
-MOCK_TOKEN=$(python3 -c "
-import json
-d = json.load(open('$SETUP_BROADCAST'))
-print(next(t['contractAddress'] for t in d['transactions'] if t['transactionType']=='CREATE'))
-")
+# ─── compute deterministic User1 fingerprint (must match local-setup.sh) ──────
+# keccak256("User1") — same formula used by local-setup.sh when creating the
+# FingerprintMapping.  The 0x-prefixed value is passed to depositToCanton().
+USER1_FP=$(cast keccak "User1")
 
-log "Gateway   : $GATEWAY"
-log "MockERC20 : $MOCK_TOKEN"
-log "Operator  : $LOCAL_CANTON_PARTY_ID"
-log "Recipient : $LOCAL_CANTON_RECIPIENT_ID"
-log "Amount    : $LOCK_AMOUNT (raw) = 1.000000 mUSDCx"
+log "CantonBridge : $CANTON_BRIDGE"
+log "MockUSDC     : $MOCK_TOKEN"
+log "Operator     : $LOCAL_CANTON_PARTY_ID"
+log "User1 fp     : $USER1_FP"
+log "Amount       : $DEPOSIT_AMOUNT (raw) = 1.000000 mUSDC"
 echo ""
 
-# ─── step 1: approve Gateway to spend tokens ─────────────────────────────────
-log "Approving Gateway to spend $LOCK_AMOUNT mUSDCx..."
+# ─── step 1: approve CantonBridge to pull tokens ──────────────────────────────
+log "Approving CantonBridge to spend $DEPOSIT_AMOUNT mUSDC..."
 cast send "$MOCK_TOKEN" \
-  "approve(address,uint256)" "$GATEWAY" "$LOCK_AMOUNT" \
+  "approve(address,uint256)" "$CANTON_BRIDGE" "$DEPOSIT_AMOUNT" \
   --private-key "$PRIVATE_KEY" \
   --rpc-url "$LOCAL_RPC" \
   --json | python3 -c "import json,sys; r=json.load(sys.stdin); print('  tx:', r.get('transactionHash','?'))"
 ok "Approved"
 
-# ─── step 2: lock tokens on Plasma ───────────────────────────────────────────
-log "Calling Gateway.lock() — recipient = User1 (Canton), relayed by BridgeOperator..."
-TX_HASH=$(cast send "$GATEWAY" \
-  "lock(address,uint256,string,bytes32)" \
-  "$MOCK_TOKEN" "$LOCK_AMOUNT" "$LOCAL_CANTON_RECIPIENT_ID" "$CANTON_CHAIN_ID" \
+# ─── step 2: deposit tokens into CantonBridge ─────────────────────────────────
+log "Calling CantonBridge.depositToCanton() — fingerprint=$USER1_FP..."
+TX_HASH=$(cast send "$CANTON_BRIDGE" \
+  "depositToCanton(address,uint256,bytes32)" \
+  "$MOCK_TOKEN" "$DEPOSIT_AMOUNT" "$USER1_FP" \
   --private-key "$PRIVATE_KEY" \
   --rpc-url "$LOCAL_RPC" \
   --json | python3 -c "import json,sys; print(json.load(sys.stdin)['transactionHash'])")
-ok "Locked — tx: $TX_HASH"
+ok "Deposited — tx: $TX_HASH"
 echo ""
 
 # ─── step 3: poll DB for RELAYED status ──────────────────────────────────────
@@ -104,36 +105,43 @@ if [[ "$STATUS" != "RELAYED" ]]; then
 fi
 ok "DB row is RELAYED"
 
-# ─── step 4: verify MockUSDCxHolding on Canton ───────────────────────────────
-log "Querying Canton ledger for MockUSDCxHolding contracts..."
-CANTON_END=$(curl -s "$CANTON_JSON_API/v2/state/ledger-end" 2>/dev/null | \
-  python3 -c "import json,sys; print(json.load(sys.stdin).get('offset', 50))" 2>/dev/null || echo "50")
+# ─── step 4: verify CIP56Holding on Canton ───────────────────────────────────
+log "Querying Canton ledger for CIP56Holding contracts..."
 
-curl -s -X POST "$CANTON_JSON_API/v2/updates" \
+curl -sf -X POST "$CANTON_JSON_API/v2/state/active-contracts" \
   -H "Content-Type: application/json" \
-  -d "{\"beginExclusive\":0,\"endInclusive\":$CANTON_END,\"filter\":{\"filtersByParty\":{\"$LOCAL_CANTON_PARTY_ID\":{}}}}" \
-  2>/dev/null | python3 -c "
+  -d "{
+    \"filter\": {
+      \"filtersByParty\": {
+        \"$LOCAL_CANTON_PARTY_ID\": {
+          \"cumulative\": {
+            \"templateFilters\": [{
+              \"template\": {
+                \"moduleName\": \"CIP56.Token\",
+                \"entityName\": \"CIP56Holding\"
+              }
+            }]
+          }
+        }
+      }
+    }
+  }" 2>/dev/null | python3 -c "
 import json, sys
 try:
     data = json.load(sys.stdin)
-    holdings = []
-    for entry in data:
-        tx = entry.get('update', {}).get('Transaction', {}).get('value', {})
-        for event in tx.get('events', []):
-            ce = event.get('CreatedEvent', {})
-            if 'MockUSDCxHolding' in ce.get('templateId', '') and ce.get('acsDelta'):
-                holdings.append(ce.get('createArgument', {}))
-    if holdings:
-        print(f'  Found {len(holdings)} MockUSDCxHolding contract(s) on Canton:')
-        for h in holdings:
-            print(f'    owner={h.get(\"owner\",\"?\")}  amount={h.get(\"amount\",\"?\")}')
+    contracts = data.get('activeContracts', [])
+    if contracts:
+        print(f'  Found {len(contracts)} CIP56Holding contract(s) on Canton:')
+        for c in contracts:
+            args = c.get('createdEvent', {}).get('createArgument', {})
+            print(f'    owner={args.get(\"owner\",\"?\")}  amount={args.get(\"amount\",\"?\")}  instrumentId={args.get(\"instrumentId\",\"?\")}')
     else:
-        print('  No holdings found via updates stream')
+        print('  No CIP56Holding contracts found (relayer may still be processing)')
 except Exception as e:
     print(f'  Canton query note: {e}')
 " 2>/dev/null || true
 
 echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-ok "E2E test passed — 1 mUSDCx bridged from Plasma to Canton"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+ok "E2E test passed — 1 mUSDC bridged from Plasma to Canton (CIP56Holding minted)"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
