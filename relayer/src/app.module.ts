@@ -9,6 +9,9 @@ import { DatabaseModule } from './database/database.module';
 import { BridgeTransaction } from './database/entities/bridge-transaction.entity';
 import { WatcherModule } from './watcher/watcher.module';
 import { SubgraphModule } from './subgraph/subgraph.module';
+import { WithdrawalWatcherModule } from './withdrawal/withdrawal-watcher.module';
+import { PlasmaModule } from './plasma/plasma.module';
+import { TransactionsModule } from './transactions/transactions.module';
 
 @Module({
   imports: [
@@ -18,6 +21,9 @@ import { SubgraphModule } from './subgraph/subgraph.module';
     SubgraphModule,
     CantonModule,
     WatcherModule,
+    WithdrawalWatcherModule,
+    PlasmaModule,
+    TransactionsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
