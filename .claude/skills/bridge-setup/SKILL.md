@@ -38,14 +38,21 @@ Wait for the summary block (`━━━━...━━━━`) before proceeding.
 
 ### Step 2 — Start the relayer (separate terminal)
 ```bash
-cd relayer && yarn start:dev 2>&1 | tee /tmp/relayer.log
+cd relayer && yarn build && node dist/main.js 2>&1 | tee /tmp/relayer.log
 ```
 
 Wait for: `Nest application successfully started`
 
-### Step 3 — Run e2e test (separate terminal)
+### Step 3 — Start the frontend (separate terminal)
+```bash
+cd frontend && npm run dev
+# opens http://localhost:5173
+```
+
+### Step 4 — Run e2e test (optional, separate terminal)
 ```bash
 bash scripts/e2e-test.sh
+bash scripts/e2e-canton-to-plasma-test.sh
 ```
 
 Expected output: `E2E test passed — 1 mUSDC bridged from Plasma to Canton`
@@ -151,15 +158,40 @@ docker exec relayer-postgres psql -U relayer -d relayer -c \
   "TRUNCATE bridge_transactions;"
 ```
 
-Or reset only FAILED rows:
+Or reset only FAILED rows (relayer retries automatically within 60s):
 ```bash
 docker exec relayer-postgres psql -U relayer -d relayer -c \
   "UPDATE bridge_transactions SET status='PENDING' WHERE status='FAILED';"
 ```
 
+Note: `psql` is not on the host PATH — always use `docker exec relayer-postgres psql`.
+
 ---
 
 ## Contract Addresses (from last run)
 - CantonBridge: check `plasma/broadcast/CantonBridge.s.sol/<CHAIN_ID>/run-latest.json`
-- TokenConfig / BridgeState: check `relayer/.env`
+- TokenConfig / BridgeState: check `relayer/.env` (BridgeState ID is only used for the startup log — `resolveForRelay()` always fetches it live)
 - Party IDs: `daml ledger list-parties --host localhost --port 6865 --json`
+
+## Known Bug: After Canton Restart, LOCAL_BRIDGE_STATE_ID in .env is Stale
+
+`BridgeState.RecordMint` is consuming — the contract ID changes after every relay. After a Canton restart all IDs change. Update `.env` by querying the live ledger:
+
+```bash
+OPERATOR=$(grep LOCAL_CANTON_PARTY_ID relayer/.env | cut -d= -f2)
+OFFSET=$(curl -s http://localhost:7575/v2/state/ledger-end | python3 -c "import json,sys; print(json.load(sys.stdin)['offset'])")
+curl -s -X POST http://localhost:7575/v2/state/active-contracts \
+  -H "Content-Type: application/json" \
+  -d "{\"activeAtOffset\":\"$OFFSET\",\"filter\":{\"filtersByParty\":{\"$OPERATOR\":{}}}}" \
+  | python3 -c "
+import json,sys
+data=json.load(sys.stdin)
+for item in data:
+    ev=item.get('contractEntry',{}).get('JsActiveContract',{}).get('createdEvent',{})
+    tid=ev.get('templateId',''); cid=ev.get('contractId','')
+    if 'TokenConfig' in tid: print(f'LOCAL_TOKEN_CONFIG_ID={cid}')
+    if 'BridgeState' in tid: print(f'LOCAL_BRIDGE_STATE_ID={cid}')
+"
+```
+
+Relay calls are unaffected (they always resolve the ID live) — the `.env` update is cosmetic for the startup log.

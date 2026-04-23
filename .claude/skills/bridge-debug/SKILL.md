@@ -75,7 +75,8 @@ Common errors and fixes:
 | `Missing required field at 'identifierFilter'` | Skip templateFilters entirely; filter by templateId in code |
 | `No FingerprintMapping found for fingerprint: ...` | FingerprintMapping not created with correct hex; check Canton active contracts |
 | `Canton responded 500` or `Already processed` | txHash already in BridgeState.processedTxHashes (replay guard) — this is correct behaviour |
-| `Cannot find managerId` | tokenConfigId or bridgeStateId wrong in relayer/.env |
+| `CONTRACT_NOT_FOUND` for BridgeState ID | **BridgeState.RecordMint is consuming** — its contract ID changes after every successful relay. The relayer's `resolveForRelay()` fetches it fresh each call. If this error appears, the relayer is running stale compiled code — rebuild and restart. |
+| `Cannot find managerId` | tokenConfigId wrong in relayer/.env — re-run local-setup.sh or look up live ID via active-contracts query |
 
 ### 6. Reset and Retry a FAILED Transaction
 
@@ -130,3 +131,28 @@ for i in data:
 ```
 
 If the same deposit is submitted twice, `RecordMint` will reject with "Already processed" — that's correct.
+
+### 10. Fingerprint-based lookup returns empty results
+
+If `GET /transactions?fingerprint=0x...` returns `{ deposits: [], withdrawals: [] }` but the DB clearly has a matching row:
+
+- The DB stores fingerprint with `0x` prefix (The Graph `Bytes!` → `0x<hex>`).
+- Check `transactions.service.ts:getByFingerprint` — it must normalize to `0x<hex>` not strip the prefix.
+- Also confirm the relayer is running the latest build: `kill $(lsof -ti:3000) 2>/dev/null && cd relayer && yarn build && node dist/main.js > /tmp/relayer.log 2>&1 &`
+
+### 11. BridgeState CONTRACT_NOT_FOUND on relays after the first
+
+`BridgeState.RecordMint` is a **consuming** Daml choice — it archives and recreates the contract on every successful relay, so the contract ID changes constantly.
+
+**Root cause:** Relayer running stale compiled code that cached `bridgeStateId` at startup.
+
+**Fix:** Rebuild and restart. The current `resolveForRelay()` always fetches the live ID fresh — this bug cannot reappear unless the code is reverted.
+
+```bash
+cd relayer && yarn build
+kill $(lsof -ti:3000) 2>/dev/null
+node dist/main.js > /tmp/relayer.log 2>&1 &
+# Then reset failed rows:
+docker exec relayer-postgres psql -U relayer -d relayer \
+  -c "UPDATE bridge_transactions SET status='PENDING' WHERE status='FAILED';"
+```

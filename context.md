@@ -1,6 +1,6 @@
 # Canton-Bridge Project Context
 
-> Updated 2026-04-24. Drop into a fresh Claude Code session and say "read context.md".
+> Updated 2026-04-24 (session 2). Drop into a fresh Claude Code session and say "read context.md".
 
 ---
 
@@ -74,18 +74,30 @@ canton-bridge/
 │       │   ├── withdrawal-watcher.service.ts # Canton→Plasma poller
 │       │   └── withdrawal-watcher.module.ts
 │       ├── canton/
-│       │   ├── canton.service.ts             # resolveFingerprint + relay (MintCommand)
+│       │   ├── canton.service.ts             # resolveForRelay (fingerprint+BridgeState) + relay
 │       │   ├── canton-query.service.ts       # Read-only Canton ledger queries
 │       │   ├── canton.controller.ts          # GET /canton/balance, /canton/stats
 │       │   └── dto/canton-command.dto.ts
 │       ├── plasma/
-│       │   ├── plasma.service.ts             # ethers ERC-20 reads
-│       │   ├── plasma.controller.ts          # GET /plasma/balance, /plasma/token
+│       │   ├── plasma.service.ts             # ethers ERC-20 reads + faucet (deployer wallet)
+│       │   ├── plasma.controller.ts          # GET /plasma/balance, /plasma/token, POST /plasma/faucet
 │       │   └── plasma.module.ts
 │       └── transactions/
 │           ├── transactions.service.ts       # DB + Canton ledger tx history
 │           ├── transactions.controller.ts    # GET /transactions
 │           └── transactions.module.ts
+│
+├── frontend/                   # React + Vite + ethers v6 SPA
+│   ├── src/
+│   │   ├── pages/
+│   │   │   ├── PlasmaPage.tsx      # Wallet connect, faucet, bridge form, tx history
+│   │   │   └── CantonPage.tsx      # Fingerprint lookup, tx history
+│   │   ├── components/TxTable.tsx  # Unified deposit+withdrawal table
+│   │   ├── hooks/useWallet.ts      # MetaMask connection (auto-adds chain 9746)
+│   │   └── lib/
+│   │       ├── api.ts              # Relayer API client
+│   │       └── constants.ts        # Contract addresses, chain config
+│   └── package.json
 │
 └── scripts/
     ├── local-setup.sh
@@ -208,11 +220,14 @@ All require `Content-Type: application/json` is not needed (GET). EVM address pa
 | GET | `/canton/balance?party=<partyId>` | CIP56Holdings by full Canton party ID |
 | GET | `/canton/balance?fingerprint=<hex>` | Holdings by EVM fingerprint OR Canton party hash suffix |
 | GET | `/canton/stats` | Total Canton supply, holding count, withdrawal event counts |
+| POST | `/plasma/faucet?address=0x...` | Mints 1,000 mUSDC to address using the deployer wallet (MockUSDC.mint) |
 | GET | `/transactions?depositor=0x...` | Plasma→Canton deposits sent by this EVM address (from DB) |
-| GET | `/transactions?fingerprint=<hex>` | Plasma→Canton deposits received by this fingerprint (from DB) |
+| GET | `/transactions?fingerprint=<hex>` | Plasma→Canton deposits + Canton→Plasma withdrawals by this fingerprint |
 | GET | `/transactions?evmRecipient=0x...` | Canton→Plasma withdrawals targeting this EVM address (from Canton ledger) |
 
 Params on `/transactions` can be combined. Invalid EVM addresses return 400.
+
+**Fingerprint format in DB:** stored with `0x` prefix (as returned by The Graph for `Bytes!` fields). The `getByFingerprint` normalizes the input to include `0x` before comparing — do NOT strip the prefix.
 
 ---
 
@@ -257,25 +272,6 @@ NODE_ENV=development
 
 ---
 
-## Local Setup Sequence
-
-**Terminal 1:**
-```bash
-bash scripts/local-setup.sh
-# Wait for the ━━━━━ summary block
-```
-
-**Terminal 2 (relayer) — run from relayer/ directory:**
-```bash
-cd relayer && yarn build && node dist/main.js
-```
-
-**Terminal 3 — e2e tests:**
-```bash
-bash scripts/e2e-test.sh                    # Plasma→Canton
-bash scripts/e2e-canton-to-plasma-test.sh   # Canton→Plasma (requires e2e-test.sh first)
-```
-
 ### Rebuild and restart relayer after code changes
 
 ```bash
@@ -291,19 +287,37 @@ The relayer **must be run from the `relayer/` directory** so that `.env` is foun
 
 ## DB Commands
 
+Use `docker exec` — `psql` is not on the host PATH:
+
 ```bash
 # Check recent transactions
-PGPASSWORD=relayer psql -h localhost -p 5433 -U relayer -d relayer \
+docker exec relayer-postgres psql -U relayer -d relayer \
   -c "SELECT nonce, status, LEFT(transaction_hash,20) as tx, LEFT(recipient,20) as fp FROM bridge_transactions ORDER BY created_at DESC LIMIT 10;"
 
-# Reset FAILED rows
-PGPASSWORD=relayer psql -h localhost -p 5433 -U relayer -d relayer \
+# Reset FAILED rows (relayer retries automatically on next 60s cycle)
+docker exec relayer-postgres psql -U relayer -d relayer \
   -c "UPDATE bridge_transactions SET status='PENDING' WHERE status='FAILED';"
 
 # Truncate
-PGPASSWORD=relayer psql -h localhost -p 5433 -U relayer -d relayer \
+docker exec relayer-postgres psql -U relayer -d relayer \
   -c "TRUNCATE bridge_transactions;"
 ```
+
+---
+
+## Critical Architecture Notes
+
+### BridgeState contract ID rotates on every relay
+
+`BridgeState.RecordMint` is a **consuming** Daml choice — it archives the old contract and creates a new one with each processed deposit. The contract ID therefore changes after every successful relay.
+
+**Never cache `LOCAL_BRIDGE_STATE_ID` from `.env` across relay calls.** The relayer's `resolveForRelay()` method fetches the live `BridgeState` ID from the active-contracts ledger on every relay call. This is intentional.
+
+If `LOCAL_BRIDGE_STATE_ID` in `.env` is stale (e.g. after a Canton restart), it will only affect the startup log message — relay calls always resolve fresh.
+
+### Fingerprint storage format
+
+The subgraph returns `fingerprint` as `Bytes!` → The Graph serializes `Bytes` with `0x` prefix. So the DB `recipient` column stores `0x9267b5b6...`, not `9267b5b6...`. Any SQL comparison must include the `0x` prefix.
 
 ---
 
@@ -435,6 +449,33 @@ ed4ed1a docs(skills): add Canton/Daml bridge skills for Claude Code
 090ebe6 feat(relayer): fingerprint-based MintCommand relay flow
 ac2ff7f feat(subgraph): index CantonBridge events alongside legacy Gateway
 8f9035d feat(canton): update Main.daml setup script and daml.yaml
+```
+
+---
+
+## Local Setup Sequence (with Frontend)
+
+**Terminal 1:**
+```bash
+bash scripts/local-setup.sh
+# Wait for the ━━━━━ summary block
+```
+
+**Terminal 2 (relayer) — run from relayer/ directory:**
+```bash
+cd relayer && yarn build && node dist/main.js
+```
+
+**Terminal 3 (frontend):**
+```bash
+cd frontend && npm run dev
+# opens http://localhost:5173
+```
+
+**Terminal 4 — e2e tests (optional):**
+```bash
+bash scripts/e2e-test.sh
+bash scripts/e2e-canton-to-plasma-test.sh
 ```
 
 ---
