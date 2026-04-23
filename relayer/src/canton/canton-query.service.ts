@@ -47,8 +47,11 @@ export class CantonQueryService implements OnModuleInit {
         instrumentId: string;
         metadata: Record<string, string>;
       };
-      const storedFp = (args.metadata?.['bridge.userFingerprint'] ?? '').toLowerCase();
-      if (storedFp !== hex) continue;
+      // Match on EVM fingerprint stored in metadata (set at mint time)
+      const evmFp = (args.metadata?.['bridge.userFingerprint'] ?? '').toLowerCase();
+      // Also match on the Canton party hash suffix (the part after '::' in the party ID)
+      const partyHash = (args.owner?.split('::')[1] ?? '').toLowerCase();
+      if (evmFp !== hex && partyHash !== hex) continue;
       holdings.push({
         contractId: event.contractId,
         owner: args.owner,
