@@ -1,21 +1,21 @@
 # Canton-Bridge Project Context
 
-> Written 2026-04-23 for use in a fresh Claude Code session.
-> Drop this file into the conversation at the start and say "read context.md".
+> Updated 2026-04-24. Drop into a fresh Claude Code session and say "read context.md".
 
 ---
 
 ## What This Project Is
 
-A **production-grade one-way token bridge**: EVM (Plasma testnet) → Canton (Daml ledger).
+A **production-grade bidirectional token bridge**: EVM (Plasma testnet) ↔ Canton (Daml ledger).
 
-- **Direction implemented**: Plasma → Canton (deposit EVM tokens, receive CIP-56 holdings on Canton).
-- **Return direction** (Canton → EVM withdrawal): contracts exist (`withdrawFromCanton` + `WithdrawalRequest`/`WithdrawalEvent` Daml templates) but the relayer does not yet watch for Canton-side withdrawals.
-- **Reference**: ChainSafe `canton-erc20` CIP-56 standard was the design template.
+- **Plasma → Canton**: User locks ERC-20 on EVM → relayer mints CIP-56 holding on Canton.
+- **Canton → Plasma**: User burns CIP-56 holding on Canton → relayer unlocks ERC-20 on EVM.
+- **Bridge model**: Lock/unlock on EVM (no EVM mint/burn by the bridge). Mint/burn on Canton — intentional, Canton uses a UTXO model; CIP56Holdings ARE the canonical representation of locked EVM tokens.
+- **Receiver model**: Push-based on both sides. Recipient never touches the bridge contract.
 
 The project went through two generations:
-1. **POC** (Gateway.sol / BridgeReceiver.daml) — a simple lock/unlock bridge. Still present in the repo for reference.
-2. **Production** (CantonBridge.sol / CIP-56 Daml stack) — the current active codebase, built in the sessions documented here.
+1. **POC** (Gateway.sol) — simple lock/unlock, still present for reference.
+2. **Production** (CantonBridge.sol / CIP-56 Daml stack) — current active codebase.
 
 ---
 
@@ -25,66 +25,73 @@ The project went through two generations:
 canton-bridge/
 ├── plasma/                     # Solidity (Foundry project)
 │   ├── src/
-│   │   ├── CantonBridge.sol         # Main bridge contract (ACTIVE)
+│   │   ├── CantonBridge.sol         # Main bridge contract (lock/unlock escrow)
 │   │   ├── TokenRegistry.sol        # ERC-20 whitelist + CIP-56 ID mapping
 │   │   ├── MockERC20.sol            # MockUSDC (6 dec), MockWBTC (8 dec)
-│   │   ├── Gateway.sol              # POC — kept for reference only
+│   │   ├── Gateway.sol              # POC — reference only
 │   │   ├── interfaces/
-│   │   │   ├── ICantonBridge.sol    # Errors + function signatures
-│   │   │   └── IBridgeEvents.sol    # All bridge events
+│   │   │   ├── ICantonBridge.sol
+│   │   │   └── IBridgeEvents.sol
 │   │   └── security/
-│   │       └── RateLimiter.sol      # Abstract per-token rate limiter
+│   │       └── RateLimiter.sol
 │   ├── script/
-│   │   ├── CantonBridge.s.sol       # Deploy: TokenRegistry + CantonBridge + MockUSDC
-│   │   └── Gateway.s.sol            # POC deploy (reference only)
+│   │   └── CantonBridge.s.sol
 │   └── test/
-│       ├── CantonBridge.t.sol       # 30 Foundry tests (all passing)
-│       └── Gateway.t.sol            # POC tests
+│       └── CantonBridge.t.sol       # 30 Foundry tests (all passing)
 │
 ├── canton/                     # Daml project (SDK 3.4.11)
-│   ├── daml.yaml                    # name=canton-bridge, version=1.0.0, init-script=Main:setup
+│   ├── daml.yaml
 │   └── daml/
-│       ├── Main.daml                # Setup script: allocates parties, creates contracts, prints IDs
+│       ├── Main.daml                # Setup script
 │       ├── CIP56/
-│       │   ├── Token.daml           # CIP56Holding + CIP56Manager templates
+│       │   ├── Token.daml           # CIP56Holding + CIP56Manager
 │       │   ├── Config.daml          # TokenConfig (IssuerMint / IssuerBurn)
-│       │   ├── Events.daml          # TokenTransferEvent (immutable audit trail)
+│       │   ├── Events.daml          # TokenTransferEvent (audit trail)
 │       │   └── Compliance.daml      # ComplianceRules (optional KYC hook)
 │       ├── Bridge/
-│       │   ├── Contracts.daml       # MintCommand, WithdrawalRequest, WithdrawalEvent
-│       │   └── State.daml           # BridgeState (replay protection via processedTxHashes)
-│       ├── Common/
-│       │   ├── FingerprintAuth.daml # FingerprintMapping, PendingDeposit, DepositReceipt
-│       │   ├── Types.daml           # EvmAddress, ChainRef, BridgeDirection, TokenMeta
-│       │   └── Utils.daml           # isValidAmount, isValidEvmAddress, etc.
-│       ├── BridgeReceiver.daml      # POC — kept for reference
-│       └── MockUSDCx.daml           # POC — kept for reference
+│       │   ├── Contracts.daml       # MintCommand + DepositToPlasma + DepositToPlasmaEvent
+│       │   └── State.daml           # BridgeState (replay protection)
+│       └── Common/
+│           ├── FingerprintAuth.daml # FingerprintMapping only (PendingDeposit/DepositReceipt removed)
+│           ├── Types.daml
+│           └── Utils.daml
 │
-├── subgraph/                   # The Graph indexer (AssemblyScript)
-│   ├── schema.graphql               # Deposit, TokenRegistration, Lock (legacy)
-│   ├── subgraph.yaml                # Two data sources: CantonBridge + Gateway (legacy)
+├── subgraph/                   # The Graph indexer
+│   ├── schema.graphql
+│   ├── subgraph.yaml
 │   └── src/
-│       ├── cantonBridge.ts          # handleDeposit, handleTokenRegistered, handleTokenDeregistered
-│       └── gateway.ts               # Legacy lock handler
+│       ├── cantonBridge.ts          # handleDeposit, handleTokenRegistered
+│       └── gateway.ts               # Legacy
 │
 ├── relayer/                    # NestJS off-chain relay service
 │   └── src/
 │       ├── config/configuration.ts  # Two-profile config: local / prod
 │       ├── database/entities/
-│       │   └── bridge-transaction.entity.ts  # BridgeTransaction TypeORM entity
-│       ├── subgraph/
-│       │   └── subgraph.service.ts  # fetchDepositsSinceNonce() GraphQL query
-│       ├── watcher/
-│       │   └── watcher.service.ts   # Poll subgraph → insert DB → checkPending → relay
-│       └── canton/
-│           ├── canton.service.ts    # resolveFingerprint() + relay() via Canton v2 API
-│           └── dto/canton-command.dto.ts  # CantonSubmitRequest / CantonSubmitResponse
+│       │   └── bridge-transaction.entity.ts
+│       ├── subgraph/subgraph.service.ts
+│       ├── watcher/watcher.service.ts        # Plasma→Canton poller
+│       ├── withdrawal/
+│       │   ├── withdrawal-watcher.service.ts # Canton→Plasma poller
+│       │   └── withdrawal-watcher.module.ts
+│       ├── canton/
+│       │   ├── canton.service.ts             # resolveFingerprint + relay (MintCommand)
+│       │   ├── canton-query.service.ts       # Read-only Canton ledger queries
+│       │   ├── canton.controller.ts          # GET /canton/balance, /canton/stats
+│       │   └── dto/canton-command.dto.ts
+│       ├── plasma/
+│       │   ├── plasma.service.ts             # ethers ERC-20 reads
+│       │   ├── plasma.controller.ts          # GET /plasma/balance, /plasma/token
+│       │   └── plasma.module.ts
+│       └── transactions/
+│           ├── transactions.service.ts       # DB + Canton ledger tx history
+│           ├── transactions.controller.ts    # GET /transactions
+│           └── transactions.module.ts
 │
 └── scripts/
-    ├── local-setup.sh               # Full local stack bootstrap (see details below)
-    ├── e2e-test.sh                  # End-to-end test: deposit → DB RELAYED → CIP56Holding
-    ├── canton-txns.sh               # Show all Canton ledger transactions
-    └── teardown.sh                  # Kill Anvil, Canton, Docker containers
+    ├── local-setup.sh
+    ├── e2e-test.sh                   # Plasma→Canton e2e
+    ├── e2e-canton-to-plasma-test.sh  # Canton→Plasma e2e
+    └── teardown.sh
 ```
 
 ---
@@ -93,185 +100,130 @@ canton-bridge/
 
 ### Fingerprint Model
 
-EVM users do **not** pass their full Canton party ID string. They pass a `bytes32 fingerprint`:
+EVM users pass a `bytes32 fingerprint = keccak256("User1")` to `depositToCanton()`.
 
-```
-fingerprint = keccak256("User1")   // the party hint string
-```
-
-- The bridge operator maintains `FingerprintMapping` contracts on Canton (one per registered user).
-- Each mapping links `fingerprint (hex, no 0x)` → `userParty (full Canton party ID)`.
-- The relayer resolves the fingerprint to a party before minting.
-- This is more gas-efficient and private than passing the full party ID.
-
-**Important**: In local testing, fingerprints are computed as `cast keccak "User1"` (and `"User2"`). The 0x-prefixed value is passed to `depositToCanton()` on EVM. The no-0x hex is stored in the `FingerprintMapping` Daml contract.
+- The relayer resolves fingerprint → Canton party ID via `FingerprintMapping` active contracts.
+- At mint time the fingerprint is stored in `CIP56Holding.metadata["bridge.userFingerprint"]` (no 0x prefix).
+- The Canton party hash suffix (the `1220<hash>` part after `::`) is **different** from the EVM fingerprint.
+- `GET /canton/balance?fingerprint=<hex>` accepts **both**: EVM fingerprint OR Canton party hash suffix.
 
 ### CIP-56 Token Standard (Canton)
 
-- `CIP56Holding` — UTXO-style on-ledger balance. Each holding is a separate contract. Owner controls Split/Merge/Transfer. Issuer controls Burn.
-- `CIP56Manager` — Controls token supply. Has `Mint` (nonconsuming) and `BurnHolding` choices.
-- `TokenConfig` — Wraps `CIP56Manager`. The relayer calls `IssuerMint` which: (1) calls `CIP56Manager.Mint`, (2) creates a `TokenTransferEvent` for audit trail.
+- `CIP56Holding` — UTXO-style balance. `signatory issuer` (bridge operator), `observer owner` (user). Owner controls Split/Merge/Transfer as `controller owner`. Issuer controls Burn.
+- `CIP56Manager` — `Mint` (nonconsuming) and `BurnHolding` (nonconsuming) choices.
+- `TokenConfig` — Wraps manager. `IssuerMint` creates holding + `TokenTransferEvent`. `IssuerBurn` destroys holding + event.
 
-### MintCommand — Atomic Relay
-
-The relayer never calls `IssuerMint` directly. It uses `CreateAndExercise(MintCommand → Execute)`:
+### MintCommand — Atomic Deposit Relay
 
 ```
-MintCommand.Execute atomically:
-  1. exercises BridgeState.RecordMint(txHash) → replay guard (reverts if duplicate)
-  2. exercises TokenConfig.IssuerMint(recipient, amount, ...) → creates CIP56Holding + audit event
+MintCommand.Execute (single Canton transaction):
+  1. BridgeState.RecordMint(txHash)   → replay guard (reverts on duplicate)
+  2. TokenConfig.IssuerMint(...)      → CIP56Holding + TokenTransferEvent
 ```
 
-This is a single Canton ledger transaction. If either step fails, both roll back.
+### DepositToPlasma — User-Initiated Withdrawal
 
-### BridgeState — Replay Protection
+```
+DepositToPlasma (signatory=user, observer=issuer):
+  choice Accept (controller=issuer):
+    → fetch holding, assert owner+amount match
+    → TokenConfig.IssuerBurn(holdingId)
+    → create DepositToPlasmaEvent { status=DepositPending }
 
-`BridgeState.processedTxHashes` is a list of all EVM tx hashes that have been minted. `RecordMint` asserts the hash is not already in the list. The list grows with every deposit. (Not sharded — fine for local/testnet scale; would need redesign for production at scale.)
+DepositToPlasmaEvent (signatory=issuer, observer=user):
+  choice Complete(evmTxHash) → status=DepositCompleted(evmTxHash)
+  choice Fail(reason)        → status=DepositFailed(reason)
+```
 
-### FingerprintMapping Creation — No Placeholder Round-Trip
-
-`Main.daml` does NOT create `FingerprintMapping` contracts. It would need to know the fingerprints at creation time, but the keccak256 values must be computed externally. Instead:
-
-- `Main.daml` creates: `CIP56Manager`, `TokenConfig`, `BridgeState`, allocates parties.
-- `local-setup.sh` creates `FingerprintMapping` contracts directly via the Canton HTTP API after computing `cast keccak "User1"` and `"User2"`.
-
-This avoids a Remove+Create round-trip (which would have been 10 ledger txns instead of 6).
+The withdrawal is user-initiated (user creates `DepositToPlasma`). The relayer accepts, burns, relays.
 
 ---
 
-## Deposit Flow (Plasma → Canton)
+## Plasma → Canton Flow
 
 ```
-1. User approves CantonBridge to spend ERC-20 tokens
-2. User calls depositToCanton(token, amount, bytes32(keccak256("User1")))
-   → CantonBridge validates token, amount, fingerprint
-   → checks rate limit (per-token, per-window)
-   → pulls tokens via safeTransferFrom
-   → increments user nonce
+1. User calls depositToCanton(token, amount, fingerprint)
+   → tokens locked in CantonBridge escrow
    → emits DepositToCanton(token, user, amount, fingerprint, nonce)
 
-3. Subgraph indexes DepositToCanton → creates Deposit entity
+2. Subgraph indexes → Deposit entity
 
-4. Relayer WatcherService polls subgraph every 30s:
-   → fetchDepositsSinceNonce(lastNonce, pageSize)
-   → inserts new rows into bridge_transactions table (status=PENDING)
+3. WatcherService polls subgraph every 30s
+   → inserts PENDING row in bridge_transactions
 
-5. Relayer WatcherService pending-check job runs every 60s:
-   → finds PENDING rows
-   → calls canton.relay(tx):
-       a. resolveFingerprint(tx.recipient)  → fetches all active contracts, finds FingerprintMapping, returns userParty
-       b. submits CreateAndExercise(MintCommand → Execute) to /v2/commands/submit-and-wait
-   → updates row to RELAYED (or FAILED)
+4. WatcherService pending-check every 60s
+   → resolveFingerprint → party ID via FingerprintMapping
+   → CreateAndExercise(MintCommand → Execute)
+   → row updated to RELAYED
 
-6. On Canton: MintCommand.Execute
-   → BridgeState.RecordMint(txHash) → adds to processedTxHashes
-   → TokenConfig.IssuerMint → CIP56Manager.Mint → new CIP56Holding contract
-   → TokenTransferEvent created (audit trail)
+5. On Canton: CIP56Holding created with owner=recipient
+   → holding appears on recipient's ledger (no claim needed)
 ```
 
 ---
 
-## Canton v2 HTTP API — Quirks and Gotchas
+## Canton → Plasma Flow
 
-These were discovered through trial and error. **Do not deviate from these patterns.**
+```
+1. User creates DepositToPlasma contract (actAs=userParty, userId=sandbox)
+   { user, issuer, holdingId, amount, evmRecipient, fingerprint }
 
-### `/v2/state/active-contracts`
+2. WithdrawalWatcherService polls Canton active contracts every 30s
+   Phase 1 — finds DepositToPlasma (not DepositToPlasmaEvent):
+     → exercises Accept(tokenConfigId)
+     → IssuerBurn destroys CIP56Holding
+     → DepositToPlasmaEvent { status=DepositPending } created
 
-1. **`activeAtOffset` is REQUIRED.** Fetch it first from `/v2/state/ledger-end`:
-   ```
-   GET /v2/state/ledger-end → { offset: "..." }
-   ```
+   Phase 2 — finds DepositToPlasmaEvent with DepositPending:
+     → fromCantonDecimal(amount) → rawAmount bigint
+     → withdrawalId = ethers.id(contractId)   // keccak256 of Canton contract ID
+     → sign proof: keccak256(token, rawAmount, evmRecipient, withdrawalId, chainId)
+     → call withdrawFromCanton(token, rawAmount, evmRecipient, withdrawalId, proof) on EVM
+     → tokens pushed directly to evmRecipient wallet (no claim needed)
+     → exercise Complete(evmTxHash) on Canton
 
-2. **Template filtering is broken** (for our use case). Using `cumulative.templateFilters` requires an `identifierFilter` field inside each filter entry — undocumented and finicky. **Workaround**: query all contracts by party with no template filter, then filter by `templateId` in TypeScript code:
-   ```typescript
-   filter: { filtersByParty: { [this.partyId]: {} } }
-   // then: items.find(item => item.contractEntry?.JsActiveContract?.createdEvent?.templateId?.includes('FingerprintMapping'))
-   ```
+3. On failure: exercise Fail(reason) on Canton → status=DepositFailed
+```
 
-3. **Response is a plain JSON array**, NOT `{ activeContracts: [...] }`:
-   ```
-   [ { contractEntry: { JsActiveContract: { createdEvent: { templateId, createArgument } } } } ]
-   ```
+### Withdrawal proof signing
 
-4. If you must use `cumulative`, it must be an **array**, not an object:
-   ```json
-   { "cumulative": [{ "templateFilters": [...] }] }  // CORRECT
-   { "cumulative": { "templateFilters": [...] } }      // WRONG — "expecting array"
-   ```
-
-### `/v2/commands/submit-and-wait`
-
-- `CreateAndExercise` command structure:
-  ```json
-  {
-    "CreateAndExerciseCommand": {
-      "templateId": "#canton-bridge:Bridge.Contracts:MintCommand",
-      "createArguments": { ... },
-      "choice": "Execute",
-      "choiceArgument": { "dummy": {} }
-    }
-  }
-  ```
-- Template ID format: `#<dar-name>:<Module>.<Template>`
-- Decimal amounts: Daml `Decimal` is a string like `"1.000000"` (NOT a JS number).
-
----
-
-## Subgraph
-
-- **Name**: `canton-bridge-local`
-- **Two data sources**: `CantonBridge` (active) + `Gateway` (legacy, kept for historical indexing).
-- **Critical**: Both data sources must have `startBlock` matching the CantonBridge deployment block (not 0). If Gateway has `startBlock: 0`, graph-node will try to scan from genesis, which triggers Alchemy eth_getLogs rate-limits on the forked RPC.
-- `local-setup.sh` patches `subgraph.yaml` automatically after deployment.
-- The GraphQL `Deposit` entity has field `fingerprint` (Bytes) — this is what the relayer queries.
-
-### Key GraphQL query (relayer)
-
-```graphql
-query FetchDeposits($afterNonce: BigInt!, $first: Int!) {
-  deposits(where: { nonce_gt: $afterNonce }, orderBy: nonce, orderDirection: asc, first: $first) {
-    id nonce token amount fingerprint user blockNumber blockTimestamp transactionHash
-  }
-}
+```typescript
+const msgHash = ethers.solidityPackedKeccak256(
+  ['address', 'uint256', 'address', 'bytes32', 'uint256'],
+  [evmTokenAddress, rawAmount, evmRecipient, withdrawalId, chainId]
+);
+const proof = wallet.signMessage(ethers.getBytes(msgHash));  // adds \x19Ethereum Signed Message prefix
 ```
 
 ---
 
-## Relayer Database
+## Query API Endpoints
 
-PostgreSQL (Docker container `relayer-postgres`, port 5433).
+All require `Content-Type: application/json` is not needed (GET). EVM address params are validated with `ethers.isAddress`.
 
-Table: `bridge_transactions`
-
-| Column | Type | Notes |
+| Method | Route | Description |
 |---|---|---|
-| `id` | uuid PK | |
-| `nonce` | bigint UNIQUE | From the DepositToCanton event |
-| `token` | varchar(42) | ERC-20 address |
-| `amount` | numeric(78,0) | Raw token units |
-| `recipient` | text | **bytes32 fingerprint hex** (for CantonBridge) or Canton party ID (legacy Gateway) |
-| `depositor` | varchar(42) | EVM depositor address |
-| `to_chain` | varchar(66) | NULL for CantonBridge; keccak256 chain ID for legacy Gateway |
-| `transaction_hash` | varchar(66) | EVM tx hash |
-| `status` | enum | PENDING → RELAYED or FAILED |
-| `canton_tx_id` | text | Canton updateId on success |
-| `canton_submitted_at` | timestamptz | |
+| GET | `/plasma/balance?address=0x...&token=0x...` | ERC-20 balance. `token` defaults to configured MockUSDC |
+| GET | `/plasma/token?token=0x...` | Token metadata + totalSupply + lockedInBridge |
+| GET | `/canton/balance?party=<partyId>` | CIP56Holdings by full Canton party ID |
+| GET | `/canton/balance?fingerprint=<hex>` | Holdings by EVM fingerprint OR Canton party hash suffix |
+| GET | `/canton/stats` | Total Canton supply, holding count, withdrawal event counts |
+| GET | `/transactions?depositor=0x...` | Plasma→Canton deposits sent by this EVM address (from DB) |
+| GET | `/transactions?fingerprint=<hex>` | Plasma→Canton deposits received by this fingerprint (from DB) |
+| GET | `/transactions?evmRecipient=0x...` | Canton→Plasma withdrawals targeting this EVM address (from Canton ledger) |
 
-### Useful DB commands
+Params on `/transactions` can be combined. Invalid EVM addresses return 400.
 
-```bash
-# Check recent transactions
-docker exec relayer-postgres psql -U relayer -d relayer -c \
-  "SELECT nonce, status, LEFT(transaction_hash,20) as tx, LEFT(recipient,20) as fp FROM bridge_transactions ORDER BY created_at DESC LIMIT 10;"
+---
 
-# Reset FAILED rows for retry
-docker exec relayer-postgres psql -U relayer -d relayer -c \
-  "UPDATE bridge_transactions SET status='PENDING' WHERE status='FAILED';"
+## Canton v2 HTTP API — Quirks
 
-# Truncate everything (full reset)
-docker exec relayer-postgres psql -U relayer -d relayer -c \
-  "TRUNCATE bridge_transactions;"
-```
+1. **`activeAtOffset` is required** — fetch from `GET /v2/state/ledger-end` first.
+2. **No template filter** — query all contracts by party (`filtersByParty: { [partyId]: {} }`), filter by `templateId` in TypeScript.
+3. **Response is a plain JSON array**: `[{ contractEntry: { JsActiveContract: { createdEvent: { contractId, templateId, createArgument } } } }]`
+4. **`contractId` is inside `createdEvent`**, NOT directly on `JsActiveContract`.
+5. `CIP56Holding.createArgument` fields: `issuer`, `owner`, `amount` (Decimal string), `instrumentId` (not `token`), `locked` (null or string), `metadata` (object).
+6. `metadata["bridge.userFingerprint"]` holds the EVM fingerprint without 0x prefix.
 
 ---
 
@@ -283,15 +235,20 @@ MODE=local
 LOCAL_DATABASE_URL=postgresql://relayer:relayer@localhost:5433/relayer
 LOCAL_SUBGRAPH_URL=http://localhost:8000/subgraphs/name/canton-bridge-local
 LOCAL_PLASMA_RPC=http://localhost:8545
+LOCAL_RELAYER_PRIVATE_KEY=<deployer private key>
+LOCAL_CANTON_BRIDGE_ADDRESS=<CantonBridge contract address>
+LOCAL_EVM_TOKEN_ADDRESS=<MockUSDC contract address>
+LOCAL_CHAIN_ID=9746
 LOCAL_CANTON_URL=http://localhost:7575
 LOCAL_CANTON_PARTY_ID=<BridgeOperator full party ID>
 LOCAL_CANTON_TOKEN=
 LOCAL_CANTON_USER_ID=sandbox
-LOCAL_TOKEN_CONFIG_ID=<TokenConfig ContractId from Canton>
-LOCAL_BRIDGE_STATE_ID=<BridgeState ContractId from Canton>
+LOCAL_TOKEN_CONFIG_ID=<TokenConfig ContractId>
+LOCAL_BRIDGE_STATE_ID=<BridgeState ContractId>
 
 POLL_INTERVAL_MS=30000
 PENDING_CHECK_INTERVAL_MS=60000
+LOCAL_WITHDRAWAL_POLL_MS=30000
 SUBGRAPH_PAGE_SIZE=100
 CANTON_TOKEN_DECIMALS=6
 PORT=3000
@@ -302,95 +259,74 @@ NODE_ENV=development
 
 ## Local Setup Sequence
 
-### Prerequisites
-
-- `forge`, `cast`, `anvil` (Foundry nightly)
-- `daml` SDK 3.4.11
-- `docker`
-- `node` + `yarn`
-- `plasma/.env` with `PRIVATE_KEY` set
-
-### Full stack from scratch
-
-**Terminal 1 — keeps running:**
+**Terminal 1:**
 ```bash
-bash scripts/local-setup.sh 2>&1 | tee /tmp/setup.log
-# Wait for the ━━━━━ summary block before continuing
+bash scripts/local-setup.sh
+# Wait for the ━━━━━ summary block
 ```
 
-**Terminal 2 — relayer:**
+**Terminal 2 (relayer) — run from relayer/ directory:**
 ```bash
-cd relayer && yarn install && yarn start:dev 2>&1 | tee /tmp/relayer.log
-# Wait for: "Nest application successfully started"
+cd relayer && yarn build && node dist/main.js
 ```
 
-**Terminal 3 — e2e test:**
+**Terminal 3 — e2e tests:**
 ```bash
-bash scripts/e2e-test.sh
-# Expected: "E2E test passed — 1 mUSDC bridged from Plasma to Canton"
+bash scripts/e2e-test.sh                    # Plasma→Canton
+bash scripts/e2e-canton-to-plasma-test.sh   # Canton→Plasma (requires e2e-test.sh first)
 ```
 
-### What local-setup.sh does (step by step)
+### Rebuild and restart relayer after code changes
 
-1. Kill any existing Anvil on port 8545, start fresh Anvil fork of Plasma testnet
-2. Fund deployer wallet with 100 ETH via `anvil_setBalance`
-3. Deploy via `forge script CantonBridge.s.sol:DeployCantonBridge`:
-   - TokenRegistry
-   - CantonBridge (with deployer as admin + relayer)
-   - MockUSDC (mints 1000 mUSDC to deployer)
-   - Registers MockUSDC with CIP-56 ID `"MockUSDC::canton"`
-4. Parse deployment block number and contract addresses from broadcast JSON
-5. Patch `subgraph/subgraph.yaml` — set CantonBridge address, startBlock for both data sources
-6. Start graph-node Docker stack (`docker compose up -d` in `subgraph/`)
-7. Start relayer PostgreSQL Docker container on port 5433
-8. Build Daml DAR (`daml build`)
-9. Start Canton sandbox (gRPC :6865, JSON API :7575)
-10. Run `daml script --script-name Main:setup` — allocates BridgeOperator/User1/User2 parties, creates CIP56Manager + TokenConfig + BridgeState
-11. Parse TOKEN_CONFIG_ID and BRIDGE_STATE_ID from script stdout
-12. Fetch party IDs via `daml ledger list-parties`
-13. Compute fingerprints: `USER1_FP=$(cast keccak "User1")`, `USER2_FP=$(cast keccak "User2")`
-14. Create FingerprintMapping contracts via Canton HTTP API (no-0x fingerprint stored in Daml)
-15. Write complete `relayer/.env`
-16. Build subgraph: `npm install`, `npm run codegen`, `npm run build`
-17. Deploy subgraph: `npx graph create` + `npx graph deploy`
-18. Print summary block with all contract addresses + party IDs
+```bash
+cd relayer
+yarn build
+kill $(lsof -ti:3000) 2>/dev/null
+node dist/main.js > /tmp/relayer.log 2>&1 &
+```
+
+The relayer **must be run from the `relayer/` directory** so that `.env` is found.
+
+---
+
+## DB Commands
+
+```bash
+# Check recent transactions
+PGPASSWORD=relayer psql -h localhost -p 5433 -U relayer -d relayer \
+  -c "SELECT nonce, status, LEFT(transaction_hash,20) as tx, LEFT(recipient,20) as fp FROM bridge_transactions ORDER BY created_at DESC LIMIT 10;"
+
+# Reset FAILED rows
+PGPASSWORD=relayer psql -h localhost -p 5433 -U relayer -d relayer \
+  -c "UPDATE bridge_transactions SET status='PENDING' WHERE status='FAILED';"
+
+# Truncate
+PGPASSWORD=relayer psql -h localhost -p 5433 -U relayer -d relayer \
+  -c "TRUNCATE bridge_transactions;"
+```
 
 ---
 
 ## Known Issues and Fixes
 
-### Subgraph "has not started syncing yet" (rate-limited)
+### Subgraph "has not started syncing yet"
 
-**Cause**: Gateway `startBlock: 0` → graph-node scans from genesis → Alchemy `eth_getLogs` rate-limited on free tier.
-**Fix**: Set both data source `startBlock` values to the CantonBridge deployment block. `local-setup.sh` does this automatically. Manual fix:
-```bash
-cd subgraph && npm run build
-npx graph deploy --node http://localhost:8020 --ipfs http://localhost:5001 --version-label "v0.0.x" canton-bridge-local
-```
+**Cause**: Gateway `startBlock: 0` → scans from genesis → Alchemy rate-limited.
+**Fix**: Set both data source `startBlock` to CantonBridge deployment block. `local-setup.sh` does this automatically.
 
 ### graph-node reorg loop from previous run
 
 **Symptom**: `ERRO Subgraph writer failed ... No rows affected`
-**Fix**: Wipe graph-node volumes and redeploy:
 ```bash
-cd subgraph
-docker compose down -v
-docker compose up -d
+cd subgraph && docker compose down -v && docker compose up -d
 sleep 15
 npx graph create --node http://localhost:8020 canton-bridge-local 2>/dev/null || true
 npm run build
 npx graph deploy --node http://localhost:8020 --ipfs http://localhost:5001 --version-label "v0.0.1" canton-bridge-local
 ```
 
-### Subgraph name mismatch
+### `No FingerprintMapping found`
 
-`npm run create:local` in package.json creates `gateway-local`, but we deploy as `canton-bridge-local`. Always use `npx graph create --node http://localhost:8020 canton-bridge-local` directly.
-
-### `No FingerprintMapping found for fingerprint: ...`
-
-FingerprintMapping was not created, or was created with wrong fingerprint format.
-
-Check what's on the ledger:
 ```bash
 OPERATOR=$(grep LOCAL_CANTON_PARTY_ID relayer/.env | cut -d= -f2)
 OFFSET=$(curl -s http://localhost:7575/v2/state/ledger-end | python3 -c "import json,sys; print(json.load(sys.stdin)['offset'])")
@@ -398,242 +334,126 @@ curl -s -X POST http://localhost:7575/v2/state/active-contracts \
   -H "Content-Type: application/json" \
   -d "{\"activeAtOffset\":\"$OFFSET\",\"filter\":{\"filtersByParty\":{\"$OPERATOR\":{}}}}" \
   | python3 -c "
-import json,sys
-data=json.load(sys.stdin)
+import json,sys; data=json.load(sys.stdin)
 fps=[i for i in data if 'FingerprintMapping' in str(i)]
-print(f'FingerprintMappings found: {len(fps)}')
+print(f'{len(fps)} FingerprintMappings')
 for c in fps:
     a=c['contractEntry']['JsActiveContract']['createdEvent']['createArgument']
     print(f'  fp={a[\"fingerprint\"]}  party={a[\"userParty\"][:60]}')
 "
 ```
 
-Expected fingerprints (no 0x prefix):
-- User1: `cast keccak "User1" | sed 's/0x//'`
-- User2: `cast keccak "User2" | sed 's/0x//'`
-
-### Canton relay fails with `400 cumulative expecting array`
-
-`resolveFingerprint` is sending wrong filter format. See the API quirks section above. Current `canton.service.ts` correctly avoids this by not using template filters at all.
-
-### `Already processed` / `Bridge replay detected`
-
-The same EVM tx hash was submitted twice to Canton. `BridgeState.RecordMint` correctly rejected it. This is expected behavior — the relayer DB row should already be RELAYED.
-
 ### Port conflicts
 
 ```bash
-lsof -ti:8545 | xargs kill -9 2>/dev/null   # Anvil
-lsof -ti:6865 | xargs kill -9 2>/dev/null   # Canton gRPC
-lsof -ti:7575 | xargs kill -9 2>/dev/null   # Canton JSON API
+lsof -ti:8545 | xargs kill -9 2>/dev/null
+lsof -ti:6865 | xargs kill -9 2>/dev/null
+lsof -ti:7575 | xargs kill -9 2>/dev/null
+lsof -ti:3000  | xargs kill -9 2>/dev/null
 docker rm -f relayer-postgres 2>/dev/null
 cd subgraph && docker compose down
 ```
 
 ---
 
-## Solidity Contracts — Key Facts
-
-### CantonBridge.sol
+## Solidity Key Facts
 
 ```
-Roles:
-  DEFAULT_ADMIN_ROLE  — deployer, grants other roles, emergencyWithdraw
-  RELAYER_ROLE        — signs withdrawal proofs
-  PAUSER_ROLE         — pause/unpause
+depositToCanton(token, amount, fingerprint)
+  safeTransferFrom → _lockedBalances[token] += amount
+  emits DepositToCanton(token, user, amount, fingerprint, nonce)
 
-depositToCanton(address token, uint256 amount, bytes32 fingerprint)
-  - onlyRegisteredToken, nonReentrant, whenNotPaused
-  - _checkAndUpdateRateLimit
-  - safeTransferFrom → _lockedBalances[token] += amount
-  - emits DepositToCanton(token, user, amount, fingerprint, nonce)
-
-withdrawFromCanton(address token, uint256 amount, address recipient, bytes32 withdrawalId, bytes proof)
-  - _verifyRelayerProof → ECDSA over keccak256(token, amount, recipient, withdrawalId, chainid)
-  - executedWithdrawals[withdrawalId] = true  (replay guard)
-  - if amount > timeLockThreshold[token]: queue timeLocked entry
-  - else: safeTransfer to recipient
-
-emergencyWithdraw(address token, address to)
-  - onlyRole(DEFAULT_ADMIN_ROLE), whenPaused
+withdrawFromCanton(token, amount, recipient, withdrawalId, proof)
+  _verifyRelayerProof: signer must have RELAYER_ROLE
+  proof = sign(keccak256(token, amount, recipient, withdrawalId, chainid))
+  executedWithdrawals[withdrawalId] = true   (replay guard)
+  safeTransfer(recipient, amount)            (direct push — no claim needed)
+  if amount > timeLockThreshold: queue in timeLocked instead
+    → anyone (including relayer) can call executeTimeLocked after delay
 ```
 
-### TokenRegistry.sol
+### Withdrawal proof (relayer TypeScript)
 
-- `registerToken(address, string cip56Id)` — auto-fetches ERC20Metadata
-- `registerTokenWithMetadata(address, symbol, name, decimals, cip56Id)` — manual
-- `isRegistered(address) → bool`
-- `getCip56Id(address) → string`
-- `getActiveTokens() → address[]`
+```typescript
+const msgHash = ethers.solidityPackedKeccak256(
+  ['address', 'uint256', 'address', 'bytes32', 'uint256'],
+  [token, rawAmount, recipient, withdrawalId, chainId]
+);
+const proof = wallet.signMessage(ethers.getBytes(msgHash));
+```
 
-### RateLimiter.sol (abstract, inherited by CantonBridge)
-
-- `_setRateLimit(token, maxAmount, period)` — maxAmount=0 disables
-- `_checkAndUpdateRateLimit(token, amount)` — auto-resets on period expiry, reverts `TokenRateLimitExceeded`
-- `getRateLimit(token)`, `getRemainingRateLimit(token)`
-
-### Withdrawal proof signing (for tests / Canton → EVM direction)
+### Withdrawal proof (Foundry test)
 
 ```solidity
+bytes32 RELAYER_ROLE = bridge.RELAYER_ROLE();  // cache BEFORE expectRevert
 bytes32 msgHash = keccak256(abi.encodePacked(token, amount, recipient, withdrawalId, block.chainid));
 bytes32 ethHash = MessageHashUtils.toEthSignedMessageHash(msgHash);
 (uint8 v, bytes32 r, bytes32 s) = vm.sign(relayerKey, ethHash);
 bytes memory proof = abi.encodePacked(r, s, v);
 ```
 
-### IMPORTANT test pattern — pre-cache role bytes32 before vm.expectRevert
-
-```solidity
-// WRONG — bridge.RELAYER_ROLE() staticcall CONSUMES expectRevert
-vm.expectRevert(...);
-bridge.grantRole(bridge.RELAYER_ROLE(), addr);  // fails silently
-
-// CORRECT
-bytes32 RELAYER_ROLE = bridge.RELAYER_ROLE();  // cache first
-vm.expectRevert(...);
-bridge.grantRole(RELAYER_ROLE, addr);
-```
-
 ---
 
-## Daml Templates — Key Facts
+## Daml Templates
 
-### Module structure
-
-| Module | Key templates |
+| Module | Templates |
 |---|---|
 | `CIP56.Token` | `CIP56Holding`, `CIP56Manager` |
-| `CIP56.Config` | `TokenConfig` |
+| `CIP56.Config` | `TokenConfig` (IssuerMint, IssuerBurn) |
 | `CIP56.Events` | `TokenTransferEvent` |
 | `Bridge.State` | `BridgeState` |
-| `Bridge.Contracts` | `MintCommand`, `WithdrawalRequest`, `WithdrawalEvent` |
-| `Common.FingerprintAuth` | `FingerprintMapping`, `PendingDeposit`, `DepositReceipt` |
-| `Common.Types` | `EvmAddress`, `ChainRef`, `BridgeDirection`, `TokenMeta` |
+| `Bridge.Contracts` | `MintCommand`, `DepositToPlasma`, `DepositToPlasmaEvent` |
+| `Common.FingerprintAuth` | `FingerprintMapping` only |
 
-### Main.daml setup script
-
-Creates (in order):
-1. `CIP56Manager` — issuer=BridgeOperator
-2. `TokenConfig` — instrumentId="MockUSDC::canton", managerId=above, auditObservers=[]
-3. `BridgeState` — bridgeOperator=BridgeOperator, processedTxHashes=[]
-
-Prints to stdout (parsed by `local-setup.sh`):
-```
-BRIDGE_OPERATOR=BridgeOperator::...
-USER1_PARTY=User1::...
-USER2_PARTY=User2::...
-TOKEN_CONFIG_ID=<hex ContractId>
-BRIDGE_STATE_ID=<hex ContractId>
-```
-
-Does NOT create FingerprintMappings — those are created by `local-setup.sh` directly.
+**Removed / deleted**:
+- `BridgeReceiver.daml`, `MockUSDCx.daml` — legacy POC, deleted
+- `PendingDeposit`, `DepositReceipt` — unused, removed from FingerprintAuth
 
 ### Daml decimal conversion
 
-EVM `uint256` raw amount → Daml `Decimal` string:
 ```typescript
 // toCantonDecimal("1000000", 6) → "1.000000"
 const raw = BigInt(rawAmount);
 const divisor = BigInt(10 ** decimals);
-const whole = raw / divisor;
-const rem = raw % divisor;
-return `${whole}.${rem.toString().padStart(decimals, '0')}`;
+return `${raw / divisor}.${(raw % divisor).toString().padStart(decimals, '0')}`;
+
+// fromCantonDecimal("1.000000", 6) → 1000000n
+const [whole, frac = ''] = s.split('.');
+return BigInt(whole) * BigInt(10 ** decimals) + BigInt(frac.padEnd(decimals, '0').slice(0, decimals));
 ```
 
 ---
 
-## Foundry Commands
-
-```bash
-cd plasma
-
-# Run all tests
-forge test -vv
-
-# Run a specific test
-forge test --match-test test_Deposit_TransfersTokensToBridge -vvv
-
-# Fuzz test
-forge test --match-test testFuzz_Deposit_AnyAmount --fuzz-runs 1000
-
-# Deploy locally (Anvil must be running)
-PRIVATE_KEY=0x... RELAYER_ADDRESS=0x... CIP56_INSTRUMENT="MockUSDC::canton" \
-forge script script/CantonBridge.s.sol:DeployCantonBridge \
-  --rpc-url http://localhost:8545 --broadcast
-```
-
----
-
-## Daml Commands
-
-```bash
-cd canton
-
-# Build DAR
-daml build
-
-# Run tests
-daml test
-
-# Run script against live sandbox
-daml script \
-  --dar .daml/dist/canton-bridge-1.0.0.dar \
-  --script-name "Main:setup" \
-  --ledger-host localhost --ledger-port 6865 \
-  --wall-clock-time
-
-# List parties
-daml ledger list-parties --host localhost --port 6865 --json
-```
-
----
-
-## Git History (production implementation)
+## Git History
 
 ```
+55acf9d fix(relayer): support Canton party hash lookup in getHoldingsByFingerprint
+4011cb3 feat(relayer): add Canton→Plasma withdrawal watcher and query controllers
+b001a0e feat(canton): add DepositToPlasma withdrawal flow; remove legacy dead templates
 ed4ed1a docs(skills): add Canton/Daml bridge skills for Claude Code
 6c54a84 feat(scripts): rewrite local-setup.sh and e2e-test.sh for CantonBridge
 090ebe6 feat(relayer): fingerprint-based MintCommand relay flow
 ac2ff7f feat(subgraph): index CantonBridge events alongside legacy Gateway
 8f9035d feat(canton): update Main.daml setup script and daml.yaml
-7ccd889 feat(canton): CIP-56 Daml templates for production bridge
-b1dcf57 test(plasma): full Foundry test suite and deploy script for CantonBridge
-e28da6f feat(plasma): CantonBridge.sol with full production security
-7eb06bc feat(plasma): add RateLimiter, bridge interfaces, and TokenRegistry
 ```
 
 ---
 
 ## What Is NOT Yet Done
 
-1. **Canton → EVM withdrawal relay**: The contracts exist (`WithdrawalRequest`, `WithdrawalEvent`, `withdrawFromCanton` on Solidity), but the relayer does not watch Canton for withdrawal events. A second watcher service would be needed to poll Canton active contracts for `WithdrawalRequest`, submit a signed proof to `withdrawFromCanton`, then call `WithdrawalEvent.Complete`.
+1. **Production deployment**: All config values are local. The `prod` profile in `configuration.ts` is wired but `PROD_*` env vars are empty.
 
-2. **Production deployment**: All config values are local (`localhost`). The `prod` profile in `configuration.ts` is wired but empty.
+2. **Multi-token support**: `TokenConfig` is hardcoded to `MockUSDC::canton`. Multiple tokens would need either multiple `TokenConfig` contracts or a lookup by instrument ID.
 
-3. **Multi-token support**: `TokenConfig` is hardcoded to one `instrumentId` (`MockUSDC::canton`). Supporting multiple tokens would require either multiple `TokenConfig` contracts or a lookup by instrument ID.
+3. **BridgeState scaling**: `processedTxHashes` is an ever-growing list in a single Daml contract. Needs sharding at high volume.
 
-4. **BridgeState scaling**: `processedTxHashes` is an ever-growing list in a single Daml contract. At high volume this will become a bottleneck. A sharded or archived approach would be needed.
-
-5. **Subgraph Alchemy RPC**: The `FORK_RPC` in `local-setup.sh` is a specific Alchemy key. It should be moved to an env var.
-
----
-
-## Claude Code Skills in This Repo
-
-Located at `.claude/skills/<name>/SKILL.md`:
-
-| Skill | When to use |
-|---|---|
-| `/bridge-setup` | Setting up the local stack from scratch, runbook |
-| `/bridge-debug` | Debugging a stuck/failed bridge transaction |
-| `/daml-bridge` | Canton/Daml patterns, SDK 3.4.11 quirks, v2 API reference |
-| `/plasma-bridge` | Solidity reference, Foundry commands, test pitfalls |
+4. **Subgraph Alchemy RPC**: `FORK_RPC` in `local-setup.sh` is hardcoded. Should be moved to an env var.
 
 ---
 
 ## User Preferences (for Claude)
 
-- **No "Co-Authored-By: Claude"** in git commits.
-- Terse responses preferred — skip summaries of what was just done.
-- Do not add docstrings/comments to code that wasn't changed.
-- Do not add extra error handling, abstractions, or future-proofing beyond what was asked.
+- No "Co-Authored-By: Claude" in git commits.
+- Terse responses — skip summaries of what was just done.
+- No docstrings/comments on unchanged code.
+- No extra error handling, abstractions, or future-proofing beyond what was asked.
