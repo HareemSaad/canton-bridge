@@ -44,69 +44,72 @@ template MintCommand
 
         return holdingId
 
--- | Withdrawal intent created by the user on Canton before claiming EVM tokens.
---   The relayer monitors these events and submits a withdrawal proof on Plasma.
-template WithdrawalRequest
+-- ─── Canton → Plasma (deposit-to-plasma) ─────────────────────────────────────
+
+data DepositToPlasmaStatus
+  = DepositPending
+  | DepositCompleted Text   -- ^ EVM tx hash on success
+  | DepositFailed    Text   -- ^ error reason
+  deriving (Eq, Show)
+
+-- | Request created by the user to burn their CIP-56 holding and receive EVM
+--   tokens.  The relayer (issuer) accepts the request atomically: burns the
+--   holding via IssuerBurn and creates a DepositToPlasmaEvent.
+template DepositToPlasma
   with
-    issuer       : Party
-    user         : Party               -- ^ Canton party burning their holding
+    user         : Party                 -- ^ Canton party initiating the withdrawal
+    issuer       : Party                 -- ^ Bridge operator (will Accept)
     holdingId    : ContractId CIP56Holding
     amount       : Decimal
-    evmRecipient : Text                -- ^ Target EVM address (hex)
-    fingerprint  : Text
+    evmRecipient : Text                  -- ^ Target EVM address (hex)
+    fingerprint  : Text                  -- ^ User's EVM bytes32 fingerprint (no 0x)
   where
-    signatory issuer
-    observer  user
+    signatory user
+    observer  issuer
 
-    -- | Burn the holding and emit a WithdrawalEvent.
-    choice Withdraw
-      : ContractId WithdrawalEvent
+    -- | Burn the holding and emit a DepositToPlasmaEvent for the relayer to
+    --   complete on the EVM side.
+    choice Accept
+      : ContractId DepositToPlasmaEvent
       with tokenConfigId : ContractId TokenConfig
       controller issuer
       do
         holding <- fetch holdingId
         assertMsg "Holding owner mismatch"  (holding.owner  == user)
         assertMsg "Holding amount mismatch" (holding.amount == amount)
-
         exercise tokenConfigId IssuerBurn with
           holdingId      = holdingId
-          externalTxHash = evmRecipient  -- placeholder until EVM tx is confirmed
-
-        create WithdrawalEvent with
+          externalTxHash = "pending"   -- updated to EVM tx hash once confirmed
+        create DepositToPlasmaEvent with
           issuer       = issuer
           user         = user
           amount       = amount
           evmRecipient = evmRecipient
           fingerprint  = fingerprint
-          status       = WithdrawalPending
+          status       = DepositPending
 
--- | Mutable state for a withdrawal tracked by the relayer.
-data WithdrawalStatus
-  = WithdrawalPending
-  | WithdrawalCompleted Text  -- ^ holds EVM tx hash on completion
-  | WithdrawalFailed    Text  -- ^ holds error reason
-  deriving (Eq, Show)
-
-template WithdrawalEvent
+-- | Mutable relay state for a Canton → Plasma withdrawal tracked by the relayer.
+template DepositToPlasmaEvent
   with
     issuer       : Party
     user         : Party
     amount       : Decimal
     evmRecipient : Text
     fingerprint  : Text
-    status       : WithdrawalStatus
+    status       : DepositToPlasmaStatus
   where
     signatory issuer
     observer  user
 
     choice Complete
-      : ContractId WithdrawalEvent
+      : ContractId DepositToPlasmaEvent
       with evmTxHash : Text
       controller issuer
-      do create this with status = WithdrawalCompleted evmTxHash
+      do create this with status = DepositCompleted evmTxHash
 
     choice Fail
-      : ContractId WithdrawalEvent
+      : ContractId DepositToPlasmaEvent
       with reason : Text
       controller issuer
-      do create this with status = WithdrawalFailed reason
+      do create this with status = DepositFailed reason
+
