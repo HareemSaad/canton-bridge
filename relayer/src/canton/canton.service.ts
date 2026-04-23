@@ -54,8 +54,9 @@ export class CantonService implements OnModuleInit {
    * Relay a validated deposit to Canton using the CIP-56 MintCommand flow.
    *
    * Flow:
-   *   1. Resolve the recipient Canton party from the EVM fingerprint via
-   *      the FingerprintMapping active contract store.
+   *   1. Single active-contracts query resolves both:
+   *        a. FingerprintMapping → recipient Canton party ID
+   *        b. Current BridgeState contract ID (changes after every RecordMint)
    *   2. Submit CreateAndExercise(MintCommand → Execute) which atomically:
    *        a. Records the tx hash in BridgeState (replay guard)
    *        b. Calls TokenConfig.IssuerMint → creates CIP56Holding + audit event
@@ -63,13 +64,15 @@ export class CantonService implements OnModuleInit {
    * Returns the Canton updateId on success.
    */
   async relay(tx: BridgeTransaction): Promise<string> {
-    // 1. Resolve fingerprint → Canton party ID
-    const recipient = await this.resolveFingerprint(tx.recipient);
-
-    // 2. Strip "0x" prefix from fingerprint for Daml Text storage
+    // Strip "0x" prefix — Daml stores fingerprint as plain hex Text
     const fingerprintHex = tx.recipient.startsWith('0x')
-      ? tx.recipient.slice(2)
-      : tx.recipient;
+      ? tx.recipient.slice(2).toLowerCase()
+      : tx.recipient.toLowerCase();
+
+    // Single active-contracts call: resolve fingerprint → party AND current BridgeState ID.
+    // BridgeState.RecordMint is a consuming choice, so its contract ID changes after
+    // every successful relay. We must fetch it fresh each time.
+    const { recipient, bridgeStateId } = await this.resolveForRelay(fingerprintHex);
 
     const body: CantonSubmitRequest = {
       actAs: [this.partyId],
@@ -87,7 +90,7 @@ export class CantonService implements OnModuleInit {
               fingerprint: fingerprintHex,
               chainRef: 'plasma',
               tokenConfigId: this.tokenConfigId,
-              bridgeStateId: this.bridgeStateId,
+              bridgeStateId,
             },
             choice: 'Execute',
             choiceArgument: { dummy: {} },
@@ -109,6 +112,80 @@ export class CantonService implements OnModuleInit {
 
     const data = (await res.json()) as CantonSubmitResponse;
     return data.updateId;
+  }
+
+  /**
+   * Single active-contracts fetch that returns both the recipient party ID
+   * (from FingerprintMapping) and the current live BridgeState contract ID.
+   *
+   * BridgeState.RecordMint is consuming — its contract ID changes after every
+   * successful relay, so it must be fetched fresh on each call rather than
+   * read once at startup.
+   */
+  private async resolveForRelay(
+    fingerprintHex: string,
+  ): Promise<{ recipient: string; bridgeStateId: string }> {
+    const endRes = await fetch(`${this.baseUrl}/v2/state/ledger-end`, {
+      headers: this.buildHeaders(),
+    });
+    if (!endRes.ok)
+      throw new Error(`Failed to fetch ledger-end: ${endRes.status}`);
+    const { offset } = (await endRes.json()) as { offset: string };
+
+    const res = await fetch(`${this.baseUrl}/v2/state/active-contracts`, {
+      method: 'POST',
+      headers: this.buildHeaders(),
+      body: JSON.stringify({
+        activeAtOffset: offset ?? '',
+        filter: { filtersByParty: { [this.partyId]: {} } },
+      }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Failed to query active contracts: ${res.status} ${text}`);
+    }
+
+    type ContractItem = {
+      contractEntry?: {
+        JsActiveContract?: {
+          createdEvent: {
+            contractId: string;
+            templateId: string;
+            createArgument: Record<string, unknown>;
+          };
+        };
+      };
+    };
+    const items = (await res.json()) as ContractItem[];
+
+    let recipient: string | undefined;
+    let bridgeStateId: string | undefined;
+
+    for (const item of items) {
+      const ev = item?.contractEntry?.JsActiveContract?.createdEvent;
+      if (!ev) continue;
+      if (ev.templateId.includes('FingerprintMapping')) {
+        const args = ev.createArgument as { fingerprint: string; userParty: string };
+        if ((args.fingerprint ?? '').toLowerCase() === fingerprintHex) {
+          recipient = args.userParty;
+        }
+      }
+      if (ev.templateId.includes('BridgeState')) {
+        bridgeStateId = ev.contractId;
+      }
+      if (recipient && bridgeStateId) break;
+    }
+
+    if (!recipient)
+      throw new Error(
+        `No FingerprintMapping found for fingerprint: ${fingerprintHex}. ` +
+          `Register the user via FingerprintMapping.create before depositing.`,
+      );
+    if (!bridgeStateId)
+      throw new Error('No active BridgeState contract found on the ledger');
+
+    this.logger.debug(`BridgeState resolved: ${bridgeStateId}`);
+    return { recipient, bridgeStateId };
   }
 
   /**

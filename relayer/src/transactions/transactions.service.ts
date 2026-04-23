@@ -39,10 +39,11 @@ export class TransactionsService {
   }
 
   async getByFingerprint(fingerprint: string): Promise<DepositTx[]> {
-    const hex = fingerprint.startsWith('0x') ? fingerprint.slice(2).toLowerCase() : fingerprint.toLowerCase();
+    // DB stores the fingerprint as returned by The Graph (Bytes type → 0x-prefixed hex).
+    const normalized = (fingerprint.startsWith('0x') ? fingerprint : '0x' + fingerprint).toLowerCase();
     const rows = await this.repo
       .createQueryBuilder('bt')
-      .where('LOWER(bt.recipient) = :hex', { hex })
+      .where('LOWER(bt.recipient) = :normalized', { normalized })
       .orderBy('bt.created_at', 'DESC')
       .getMany();
     return rows.map(this.toDepositTx);
