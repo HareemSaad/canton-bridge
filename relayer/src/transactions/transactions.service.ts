@@ -53,6 +53,11 @@ export class TransactionsService {
     return events.map((e) => ({ ...e, direction: 'canton_to_plasma' as const }));
   }
 
+  async getWithdrawalsByFingerprint(fingerprint: string): Promise<WithdrawalTx[]> {
+    const events = await this.cantonQuery.getWithdrawalEvents(undefined, fingerprint);
+    return events.map((e) => ({ ...e, direction: 'canton_to_plasma' as const }));
+  }
+
   async getAll(params: {
     depositor?: string;
     fingerprint?: string;
@@ -66,7 +71,9 @@ export class TransactionsService {
           : Promise.resolve([]),
       params.evmRecipient
         ? this.getWithdrawalsByEvmRecipient(params.evmRecipient)
-        : Promise.resolve([]),
+        : params.fingerprint
+          ? this.getWithdrawalsByFingerprint(params.fingerprint)
+          : Promise.resolve([]),
     ]);
     return { deposits, withdrawals };
   }

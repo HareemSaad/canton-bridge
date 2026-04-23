@@ -15,8 +15,14 @@ export class PlasmaService implements OnModuleInit {
   private readonly logger = new Logger(PlasmaService.name);
 
   private provider: ethers.JsonRpcProvider;
+  private signer: ethers.Wallet;
   private defaultToken: string;
   private cantonBridgeAddress: string;
+
+  private static readonly MINT_ABI = [
+    'function mint(address to, uint256 amount) external',
+    'function decimals() view returns (uint8)',
+  ];
 
   constructor(private readonly config: ConfigService) {}
 
@@ -32,6 +38,10 @@ export class PlasmaService implements OnModuleInit {
     this.provider = new ethers.JsonRpcProvider(rpc);
     this.defaultToken = token;
     this.cantonBridgeAddress = bridge;
+
+    const pk = this.config.get<string>('plasma.relayerPrivateKey');
+    if (!pk) throw new Error('plasma.relayerPrivateKey is not configured');
+    this.signer = new ethers.Wallet(pk, this.provider);
     this.logger.log(`PlasmaService initialised → ${rpc}`);
   }
 
@@ -48,6 +58,15 @@ export class PlasmaService implements OnModuleInit {
       balance: balance.toString(),
       decimals: Number(decimals),
     };
+  }
+
+  async faucet(to: string): Promise<{ txHash: string; amount: string }> {
+    const contract = new ethers.Contract(this.defaultToken, PlasmaService.MINT_ABI, this.signer);
+    const decimals = Number(await contract.decimals() as bigint);
+    const amount = BigInt(1000) * BigInt(10 ** decimals);
+    const tx = await contract.mint(to, amount) as ethers.TransactionResponse;
+    await tx.wait();
+    return { txHash: tx.hash, amount: amount.toString() };
   }
 
   async getTokenInfo(token?: string): Promise<{

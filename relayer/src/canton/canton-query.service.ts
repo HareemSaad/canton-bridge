@@ -124,9 +124,12 @@ export class CantonQueryService implements OnModuleInit {
     };
   }
 
-  async getWithdrawalEvents(evmRecipient?: string): Promise<WithdrawalEventInfo[]> {
+  async getWithdrawalEvents(evmRecipient?: string, fingerprint?: string): Promise<WithdrawalEventInfo[]> {
     const items = await this.fetchActiveContracts();
     const events: WithdrawalEventInfo[] = [];
+    const fpHex = fingerprint
+      ? (fingerprint.startsWith('0x') ? fingerprint.slice(2) : fingerprint).toLowerCase()
+      : undefined;
 
     for (const item of items) {
       const event = item?.contractEntry?.JsActiveContract?.createdEvent;
@@ -139,6 +142,7 @@ export class CantonQueryService implements OnModuleInit {
         user: string;
       };
       if (evmRecipient && args.evmRecipient?.toLowerCase() !== evmRecipient.toLowerCase()) continue;
+      if (fpHex && (args.fingerprint ?? '').toLowerCase() !== fpHex) continue;
       const statusJson = JSON.stringify(args.status);
       let status: 'pending' | 'completed' | 'failed' = 'pending';
       let evmTxHash: string | undefined;

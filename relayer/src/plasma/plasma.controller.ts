@@ -1,4 +1,4 @@
-import { Controller, Get, Query, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Query, BadRequestException } from '@nestjs/common';
 import { ethers } from 'ethers';
 import { PlasmaService } from './plasma.service';
 
@@ -30,6 +30,16 @@ export class PlasmaController {
     const addr = requireAddress(address, 'address');
     const tok = optionalAddress(token, 'token');
     return this.plasma.getBalance(addr, tok);
+  }
+
+  /**
+   * POST /plasma/faucet?address=0x...
+   * Mints 1,000 test tokens (mUSDC) to the given address using the deployer wallet.
+   */
+  @Post('faucet')
+  async faucet(@Query('address') address: string) {
+    const addr = requireAddress(address, 'address');
+    return this.plasma.faucet(addr);
   }
 
   /**
