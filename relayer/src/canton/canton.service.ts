@@ -256,12 +256,18 @@ export class CantonService implements OnModuleInit {
 
   /**
    * Create a DepositToPlasma contract on the Canton ledger on behalf of the user.
-   * The relayer acts as the user party (sandbox userId has all-party rights).
-   * The WithdrawalWatcherService will pick this up within one poll cycle.
+   *
+   * Supports partial and multi-holding withdrawals:
+   * - Multiple holdingIds are merged into one before creating DepositToPlasma.
+   * - If the merged (or single) holding amount exceeds the requested amount, it is
+   *   split first so DepositToPlasma receives the exact amount.
+   *
+   * Both Merge and Split are CIP56Holding choices with controller=owner, so they
+   * are submitted actAs the user party (sandbox userId has all-party rights).
    */
   async createWithdrawal(params: {
     fingerprint: string;
-    holdingId: string;
+    holdingIds: string[];
     amount: string;
     evmRecipient: string;
   }): Promise<{ updateId: string }> {
@@ -271,6 +277,38 @@ export class CantonService implements OnModuleInit {
 
     const userParty = await this.resolveFingerprint(params.fingerprint);
 
+    // Validate holdings and compute total
+    const currentHoldings = await this.fetchUserHoldings(userParty);
+    const requestedRaw = this.parseDecimal(params.amount);
+    let totalRaw = 0n;
+
+    for (const id of params.holdingIds) {
+      const h = currentHoldings.get(id);
+      if (!h) throw new Error(`Holding ${id} not found or not owned by this user`);
+      totalRaw += h.amountRaw;
+    }
+
+    if (requestedRaw <= 0n) throw new Error('Withdrawal amount must be positive');
+    if (requestedRaw > totalRaw)
+      throw new Error(
+        `Requested ${params.amount} exceeds total available ${this.formatDecimal(totalRaw)}`,
+      );
+
+    // Step 1: merge multiple holdings into one
+    let finalId: string;
+    if (params.holdingIds.length === 1) {
+      finalId = params.holdingIds[0];
+    } else {
+      const [base, ...rest] = params.holdingIds;
+      finalId = await this.mergeHoldings(userParty, base, rest);
+    }
+
+    // Step 2: split if the requested amount is less than the total
+    if (requestedRaw < totalRaw) {
+      finalId = await this.splitHolding(userParty, finalId, params.amount);
+    }
+
+    // Step 3: create DepositToPlasma with the exact-amount holding
     const body = {
       actAs: [userParty],
       userId: this.userId,
@@ -282,7 +320,7 @@ export class CantonService implements OnModuleInit {
             createArguments: {
               user: userParty,
               issuer: this.partyId,
-              holdingId: params.holdingId,
+              holdingId: finalId,
               amount: params.amount,
               evmRecipient: params.evmRecipient,
               fingerprint: fingerprintHex,
@@ -304,8 +342,125 @@ export class CantonService implements OnModuleInit {
     }
 
     const data = (await res.json()) as { updateId: string };
-    this.logger.log(`DepositToPlasma created updateId=${data.updateId} holding=${params.holdingId}`);
+    this.logger.log(`DepositToPlasma created updateId=${data.updateId} amount=${params.amount} holding=${finalId}`);
     return { updateId: data.updateId };
+  }
+
+  // ─── Merge / Split helpers ─────────────────────────────────────────────────
+
+  /**
+   * Merge otherIds into baseId one at a time.
+   * Each merge archives two holdings and creates one; the new contract ID is
+   * found by re-querying after each exercise.
+   */
+  private async mergeHoldings(
+    userParty: string,
+    baseId: string,
+    otherIds: string[],
+  ): Promise<string> {
+    let currentId = baseId;
+    for (const otherId of otherIds) {
+      const beforeIds = new Set((await this.fetchUserHoldings(userParty)).keys());
+      await this.exerciseAsUser(
+        userParty,
+        {
+          ExerciseCommand: {
+            templateId: '#canton-bridge:CIP56.Token:CIP56Holding',
+            contractId: currentId,
+            choice: 'Merge',
+            choiceArgument: { otherId },
+          },
+        },
+        `merge-${currentId.slice(0, 12)}-${Date.now()}`,
+      );
+      const after = await this.fetchUserHoldings(userParty);
+      const newId = [...after.keys()].find((id) => !beforeIds.has(id));
+      if (!newId) throw new Error('Merge did not produce a new holding');
+      currentId = newId;
+    }
+    return currentId;
+  }
+
+  /**
+   * Split holdingId so that one piece has exactly splitAmount.
+   * Returns the contract ID of that piece.
+   */
+  private async splitHolding(
+    userParty: string,
+    holdingId: string,
+    splitAmount: string,
+  ): Promise<string> {
+    const beforeIds = new Set((await this.fetchUserHoldings(userParty)).keys());
+    await this.exerciseAsUser(
+      userParty,
+      {
+        ExerciseCommand: {
+          templateId: '#canton-bridge:CIP56.Token:CIP56Holding',
+          contractId: holdingId,
+          choice: 'Split',
+          choiceArgument: { splitAmount },
+        },
+      },
+      `split-${holdingId.slice(0, 12)}-${Date.now()}`,
+    );
+    const splitRaw = this.parseDecimal(splitAmount);
+    const after = await this.fetchUserHoldings(userParty);
+    for (const [id, info] of after) {
+      if (!beforeIds.has(id) && info.amountRaw === splitRaw) return id;
+    }
+    throw new Error(`Split did not produce a holding with amount ${splitAmount}`);
+  }
+
+  /** Submit any command acting as the given user party. */
+  private async exerciseAsUser(
+    userParty: string,
+    command: Record<string, unknown>,
+    commandId: string,
+  ): Promise<void> {
+    const body = {
+      actAs: [userParty],
+      userId: this.userId,
+      commandId,
+      commands: [command],
+    };
+    const res = await fetch(`${this.baseUrl}/v2/commands/submit-and-wait`, {
+      method: 'POST',
+      headers: this.buildHeaders(),
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Canton command failed ${res.status}: ${text}`);
+    }
+  }
+
+  /** Fetch all CIP56Holdings owned by userParty. */
+  private async fetchUserHoldings(
+    userParty: string,
+  ): Promise<Map<string, { amount: string; amountRaw: bigint }>> {
+    const items = await this.fetchActiveContractsForParty(this.partyId);
+    const map = new Map<string, { amount: string; amountRaw: bigint }>();
+    for (const item of items) {
+      const ev = item?.contractEntry?.JsActiveContract?.createdEvent;
+      if (!ev?.templateId?.includes('CIP56Holding')) continue;
+      const args = ev.createArgument as { owner: string; amount: string };
+      if (args.owner !== userParty) continue;
+      map.set(ev.contractId, { amount: args.amount, amountRaw: this.parseDecimal(args.amount) });
+    }
+    return map;
+  }
+
+  private parseDecimal(s: string): bigint {
+    const [whole, frac = ''] = s.split('.');
+    return (
+      BigInt(whole) * BigInt(10 ** this.tokenDecimals) +
+      BigInt(frac.padEnd(this.tokenDecimals, '0').slice(0, this.tokenDecimals))
+    );
+  }
+
+  private formatDecimal(raw: bigint): string {
+    const d = BigInt(10 ** this.tokenDecimals);
+    return `${raw / d}.${(raw % d).toString().padStart(this.tokenDecimals, '0')}`;
   }
 
   // ─── wallet creation / connection ─────────────────────────────────────────

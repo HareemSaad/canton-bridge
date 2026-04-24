@@ -48,7 +48,8 @@ export default function CantonPage() {
   const [txs, setTxs] = useState<{ deposits: DepositTx[]; withdrawals: WithdrawalTx[] } | null>(null);
   const [txLoading, setTxLoading] = useState(false);
 
-  const [selectedHolding, setSelectedHolding] = useState<HoldingInfo | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [withdrawAmount, setWithdrawAmount] = useState('');
   const [evmRecipient, setEvmRecipient] = useState('');
   const [withdraw, setWithdraw] = useState<{ loading: boolean; updateId?: string; error?: string }>({ loading: false });
 
@@ -98,7 +99,8 @@ export default function CantonPage() {
       saveSession(s);
       setSession(s);
       setActiveFp(fingerprint);
-      setSelectedHolding(null);
+      setSelectedIds(new Set());
+      setWithdrawAmount('');
       setWithdraw({ loading: false });
       setHoldings(null);
       setTxs(null);
@@ -115,7 +117,8 @@ export default function CantonPage() {
     setActiveFp('');
     setHoldings(null);
     setTxs(null);
-    setSelectedHolding(null);
+    setSelectedIds(new Set());
+    setWithdrawAmount('');
     setWithdraw({ loading: false });
     setUsernameInput('');
   };
@@ -128,18 +131,49 @@ export default function CantonPage() {
     });
   };
 
+  // Decimal helpers (mirrors relayer logic, 6 decimals)
+  const parseDecimal = (s: string): bigint => {
+    const [whole, frac = ''] = s.split('.');
+    return BigInt(whole) * 1_000_000n + BigInt(frac.padEnd(6, '0').slice(0, 6));
+  };
+  const formatDecimal = (raw: bigint): string =>
+    `${raw / 1_000_000n}.${(raw % 1_000_000n).toString().padStart(6, '0')}`;
+
+  const selectedHoldings = (holdings ?? []).filter((h) => selectedIds.has(h.contractId));
+  const totalSelectedRaw = selectedHoldings.reduce((acc, h) => acc + parseDecimal(h.amount), 0n);
+
+  const toggleHolding = (h: HoldingInfo) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(h.contractId)) {
+        next.delete(h.contractId);
+      } else {
+        next.add(h.contractId);
+      }
+      return next;
+    });
+    // Reset amount to total whenever selection changes
+    setWithdrawAmount('');
+    setWithdraw({ loading: false });
+  };
+
+  const effectiveAmount = withdrawAmount.trim() || (totalSelectedRaw > 0n ? formatDecimal(totalSelectedRaw) : '');
+  const amountRaw = effectiveAmount ? (() => { try { return parseDecimal(effectiveAmount); } catch { return 0n; } })() : 0n;
+  const amountValid = amountRaw > 0n && amountRaw <= totalSelectedRaw;
+
   const handleWithdraw = async () => {
-    if (!selectedHolding || !evmRecipient.trim() || !activeFp) return;
+    if (!selectedIds.size || !amountValid || !evmRecipient.trim() || !activeFp) return;
     setWithdraw({ loading: true });
     try {
       const result = await submitWithdrawal({
         fingerprint: activeFp,
-        holdingId: selectedHolding.contractId,
-        amount: selectedHolding.amount,
+        holdingIds: [...selectedIds],
+        amount: effectiveAmount,
         evmRecipient: evmRecipient.trim(),
       });
       setWithdraw({ loading: false, updateId: result.updateId });
-      setSelectedHolding(null);
+      setSelectedIds(new Set());
+      setWithdrawAmount('');
       setEvmRecipient('');
       void loadHoldings(activeFp);
     } catch (err: unknown) {
@@ -252,39 +286,42 @@ export default function CantonPage() {
                 <p className="text-muted">No active holdings for this account.</p>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                  {holdings?.map((h) => (
-                    <button
-                      key={h.contractId}
-                      onClick={() => {
-                        setSelectedHolding(selectedHolding?.contractId === h.contractId ? null : h);
-                        setWithdraw({ loading: false });
-                      }}
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        background: selectedHolding?.contractId === h.contractId
-                          ? 'var(--accent-dim)' : 'var(--bg)',
-                        border: `1px solid ${selectedHolding?.contractId === h.contractId
-                          ? 'var(--accent)' : 'var(--border)'}`,
-                        borderRadius: '8px',
-                        padding: '10px 14px',
-                        cursor: 'pointer',
-                        textAlign: 'left',
-                        color: 'var(--text)',
-                        font: 'inherit',
-                        transition: 'border-color 0.12s, background 0.12s',
-                      }}
-                    >
-                      <span style={{ fontFamily: 'var(--mono)', fontSize: '12px', color: 'var(--text-muted)' }}>
-                        {shorten(h.contractId)}
-                      </span>
-                      <span style={{ fontWeight: 600, color: 'var(--accent-hover)', whiteSpace: 'nowrap', marginLeft: '1rem' }}>
-                        {formatCantonAmount(h.amount)}
-                      </span>
-                    </button>
-                  ))}
-                  <span className="field-hint">Click a holding to select it for withdrawal.</span>
+                  {holdings?.map((h) => {
+                    const selected = selectedIds.has(h.contractId);
+                    return (
+                      <button
+                        key={h.contractId}
+                        onClick={() => toggleHolding(h)}
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          background: selected ? 'var(--accent-dim)' : 'var(--bg)',
+                          border: `1px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
+                          borderRadius: '8px',
+                          padding: '10px 14px',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          color: 'var(--text)',
+                          font: 'inherit',
+                          transition: 'border-color 0.12s, background 0.12s',
+                        }}
+                      >
+                        <span style={{ fontFamily: 'var(--mono)', fontSize: '12px', color: 'var(--text-muted)' }}>
+                          {shorten(h.contractId)}
+                        </span>
+                        <span style={{ fontWeight: 600, color: 'var(--accent-hover)', whiteSpace: 'nowrap', marginLeft: '1rem' }}>
+                          {formatCantonAmount(h.amount)}
+                        </span>
+                      </button>
+                    );
+                  })}
+                  {selectedIds.size > 0 && (
+                    <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                      {selectedIds.size} selected · total {formatCantonAmount(formatDecimal(totalSelectedRaw))}
+                    </div>
+                  )}
+                  <span className="field-hint">Click holdings to select (multiple allowed).</span>
                 </div>
               )}
               {holdingsError && <p className="error-msg">{holdingsError}</p>}
@@ -292,28 +329,28 @@ export default function CantonPage() {
 
             <section className="card">
               <h2>Bridge to Plasma</h2>
-              {!selectedHolding ? (
-                <p className="text-muted">Select a holding on the left to withdraw.</p>
+              {!selectedIds.size ? (
+                <p className="text-muted">Select one or more holdings on the left to withdraw.</p>
               ) : (
                 <>
                   <div className="form-group">
-                    <label>Selected Holding</label>
-                    <div style={{
-                      background: 'var(--bg)',
-                      border: '1px solid var(--border)',
-                      borderRadius: '8px',
-                      padding: '8px 12px',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                    }}>
-                      <span style={{ fontFamily: 'var(--mono)', fontSize: '12px', color: 'var(--text-muted)' }}>
-                        {shorten(selectedHolding.contractId)}
-                      </span>
-                      <span style={{ fontWeight: 600, color: 'var(--accent-hover)' }}>
-                        {formatCantonAmount(selectedHolding.amount)}
-                      </span>
-                    </div>
+                    <label>Amount to withdraw (mUSDC)</label>
+                    <input
+                      type="text"
+                      className="input"
+                      placeholder={formatDecimal(totalSelectedRaw)}
+                      value={withdrawAmount}
+                      onChange={(e) => { setWithdrawAmount(e.target.value); setWithdraw({ loading: false }); }}
+                    />
+                    <span className="field-hint">
+                      Leave blank to withdraw the full selected amount ({formatCantonAmount(formatDecimal(totalSelectedRaw))}).
+                      Enter less to do a partial withdrawal — the remainder stays as a new holding.
+                    </span>
+                    {withdrawAmount && !amountValid && (
+                      <p className="error-msg" style={{ marginTop: '4px' }}>
+                        Must be between 0 and {formatDecimal(totalSelectedRaw)}
+                      </p>
+                    )}
                   </div>
                   <div className="form-group">
                     <label>EVM Recipient Address</label>
@@ -329,7 +366,7 @@ export default function CantonPage() {
                   <button
                     className="btn btn-primary"
                     onClick={() => void handleWithdraw()}
-                    disabled={withdraw.loading || !evmRecipient.trim()}
+                    disabled={withdraw.loading || !evmRecipient.trim() || !amountValid}
                   >
                     {withdraw.loading ? 'Submitting…' : 'Withdraw to Plasma'}
                   </button>

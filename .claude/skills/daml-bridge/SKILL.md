@@ -169,6 +169,45 @@ curl -X POST http://localhost:7575/v2/parties \
 }
 ```
 
+## Partial / Multi-holding Withdrawal Flow (Canton → Plasma)
+
+`POST /canton/withdraw` body: `{ fingerprint, holdingIds: string[], amount, evmRecipient }`
+
+The relayer (`canton.service.ts → createWithdrawal`) performs any necessary reshaping before creating `DepositToPlasma`:
+
+### Merge (multiple holdings → one)
+```typescript
+// actAs: userParty — controller owner on CIP56Holding.Merge
+{
+  ExerciseCommand: {
+    templateId: '#canton-bridge:CIP56.Token:CIP56Holding',
+    contractId: currentId,
+    choice: 'Merge',
+    choiceArgument: { otherId }
+  }
+}
+// After each merge: re-query user holdings, find new contractId not in before-set
+```
+
+### Split (one holding → exact amount + remainder)
+```typescript
+// actAs: userParty — controller owner on CIP56Holding.Split
+{
+  ExerciseCommand: {
+    templateId: '#canton-bridge:CIP56.Token:CIP56Holding',
+    contractId: holdingId,
+    choice: 'Split',
+    choiceArgument: { splitAmount: '20.000000' }  // Canton Decimal string
+  }
+}
+// After split: re-query, find new contractId where amountRaw === splitRaw
+```
+
+**Key**: new contract IDs after Merge/Split are found by diffing the set of user holdings before and after, not by parsing the exercise result.
+
+### In-flight holding exclusion
+`getHoldingsByFingerprint` / `getHoldingsByParty` in `canton-query.service.ts` call `collectLockedHoldingIds()` which scans active contracts for `DepositToPlasma` (not `DepositToPlasmaEvent`) and collects their `holdingId` fields. These are excluded from the returned balance — they appear "pending" in the withdrawal but are not yet burned by the watcher.
+
 ## MintCommand Flow (Plasma → Canton)
 
 1. Relayer picks up `DepositToCanton` event (fingerprint, amount, txHash)

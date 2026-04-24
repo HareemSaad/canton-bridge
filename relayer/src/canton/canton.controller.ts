@@ -61,19 +61,27 @@ export class CantonController {
   /**
    * POST /canton/withdraw
    * Creates a DepositToPlasma contract on Canton initiating a Canton→Plasma withdrawal.
-   * Body: { fingerprint, holdingId, amount, evmRecipient }
+   * Body: { fingerprint, holdingIds, amount, evmRecipient }
+   * holdingId (singular) is also accepted for backwards compatibility.
    */
   @Post('withdraw')
   async createWithdrawal(
-    @Body() body: { fingerprint?: string; holdingId?: string; amount?: string; evmRecipient?: string },
+    @Body() body: {
+      fingerprint?: string;
+      holdingIds?: string[];
+      holdingId?: string;
+      amount?: string;
+      evmRecipient?: string;
+    },
   ) {
     if (!body.fingerprint) throw new BadRequestException('fingerprint is required');
-    if (!body.holdingId) throw new BadRequestException('holdingId is required');
     if (!body.amount) throw new BadRequestException('amount is required');
     if (!body.evmRecipient) throw new BadRequestException('evmRecipient is required');
+    const holdingIds = body.holdingIds ?? (body.holdingId ? [body.holdingId] : null);
+    if (!holdingIds?.length) throw new BadRequestException('holdingIds is required');
     return this.canton.createWithdrawal({
       fingerprint: body.fingerprint,
-      holdingId: body.holdingId,
+      holdingIds,
       amount: body.amount,
       evmRecipient: body.evmRecipient,
     });

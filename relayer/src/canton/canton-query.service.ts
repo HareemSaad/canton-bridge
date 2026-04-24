@@ -36,11 +36,13 @@ export class CantonQueryService implements OnModuleInit {
   async getHoldingsByFingerprint(fingerprint: string): Promise<HoldingInfo[]> {
     const hex = fingerprint.startsWith('0x') ? fingerprint.slice(2).toLowerCase() : fingerprint.toLowerCase();
     const items = await this.fetchActiveContracts();
+    const locked = this.collectLockedHoldingIds(items);
     const holdings: HoldingInfo[] = [];
 
     for (const item of items) {
       const event = item?.contractEntry?.JsActiveContract?.createdEvent;
       if (!event?.templateId?.includes('CIP56Holding')) continue;
+      if (locked.has(event.contractId)) continue;
       const args = event.createArgument as {
         owner: string;
         amount: string;
@@ -64,11 +66,13 @@ export class CantonQueryService implements OnModuleInit {
 
   async getHoldingsByParty(partyId: string): Promise<HoldingInfo[]> {
     const items = await this.fetchActiveContracts();
+    const locked = this.collectLockedHoldingIds(items);
     const holdings: HoldingInfo[] = [];
 
     for (const item of items) {
       const event = item?.contractEntry?.JsActiveContract?.createdEvent;
       if (!event?.templateId?.includes('CIP56Holding')) continue;
+      if (locked.has(event.contractId)) continue;
       const args = event.createArgument as { owner: string; amount: string; instrumentId: string };
       if (args.owner === partyId) {
         holdings.push({
@@ -80,6 +84,22 @@ export class CantonQueryService implements OnModuleInit {
       }
     }
     return holdings;
+  }
+
+  /** Returns the set of CIP56Holding contract IDs that are committed to a pending
+   *  DepositToPlasma (i.e. not yet burned by the withdrawal watcher). These holdings
+   *  are effectively in-flight and should not appear in the user's available balance. */
+  private collectLockedHoldingIds(items: ContractItem[]): Set<string> {
+    const locked = new Set<string>();
+    for (const item of items) {
+      const event = item?.contractEntry?.JsActiveContract?.createdEvent;
+      if (!event) continue;
+      if (event.templateId.includes('DepositToPlasma') && !event.templateId.includes('DepositToPlasmaEvent')) {
+        const args = event.createArgument as { holdingId?: string };
+        if (args.holdingId) locked.add(args.holdingId);
+      }
+    }
+    return locked;
   }
 
   async getStats(): Promise<CantonStats> {

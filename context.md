@@ -1,6 +1,6 @@
 # Canton-Bridge Project Context
 
-> Updated 2026-04-24 (session 4). Drop into a fresh Claude Code session and say "read context.md".
+> Updated 2026-04-24 (session 5). Drop into a fresh Claude Code session and say "read context.md".
 
 ---
 
@@ -149,6 +149,16 @@ DepositToPlasmaEvent (signatory=issuer, observer=user):
 
 The withdrawal is user-initiated (user creates `DepositToPlasma`). The relayer accepts, burns, relays.
 
+### Partial / Multi-holding Withdrawals (session 5)
+
+`POST /canton/withdraw` now accepts `holdingIds: string[]` + `amount` (Canton decimal). The relayer's `createWithdrawal`:
+1. Validates all `holdingIds` belong to the user and their sum ≥ `amount`
+2. **Merge**: if multiple holdings, exercises `CIP56Holding.Merge` sequentially (actAs=userParty) until one holding remains. New contract ID found by re-querying after each merge.
+3. **Split**: if merged/single holding amount > `amount`, exercises `CIP56Holding.Split(splitAmount)` and finds the right piece by re-querying.
+4. Creates `DepositToPlasma` with the exact-amount holding.
+
+`GET /canton/balance` automatically hides holdings that are committed to a pending `DepositToPlasma` (i.e., referenced as `holdingId` in an active `DepositToPlasma` contract but not yet burned). Prevents showing "ghost" balances during the watcher's poll gap.
+
 ---
 
 ## Plasma → Canton Flow
@@ -221,7 +231,7 @@ All require `Content-Type: application/json` is not needed (GET). EVM address pa
 | GET | `/canton/balance?fingerprint=<hex>` | Holdings by EVM fingerprint OR Canton party hash suffix |
 | GET | `/canton/stats` | Total Canton supply, holding count, withdrawal event counts |
 | POST | `/canton/party/connect` | Create or connect a Canton party by username. Body: `{ username }`. Returns `{ partyId, fingerprint, created }`. Derives fingerprint as `keccak256(utf8(username))`. Allocates a new Canton party + `FingerprintMapping` if none exists. |
-| POST | `/canton/withdraw` | Create `DepositToPlasma` on Canton (body: `fingerprint, holdingId, amount, evmRecipient`). Returns `{ updateId }`. Relayer picks it up within one poll cycle (~30s). |
+| POST | `/canton/withdraw` | Create `DepositToPlasma` on Canton. Body: `{ fingerprint, holdingIds: string[], amount, evmRecipient }`. `holdingId` (singular) also accepted for compat. Relayer merges/splits holdings as needed before burning. Returns `{ updateId }`. |
 | POST | `/plasma/faucet?address=0x...` | Mints 1,000 mUSDC to address using the deployer wallet (MockUSDC.mint) |
 | GET | `/transactions?depositor=0x...` | Plasma→Canton deposits sent by this EVM address (from DB) |
 | GET | `/transactions?fingerprint=<hex>` | Plasma→Canton deposits + Canton→Plasma withdrawals by this fingerprint |
@@ -443,6 +453,8 @@ return BigInt(whole) * BigInt(10 ** decimals) + BigInt(frac.padEnd(decimals, '0'
 ## Git History
 
 ```
+(session 5) feat: partial/multi-holding withdrawals; hide in-flight holdings; sort txns by timestamp
+4cef531 docs: update context.md and daml-bridge skill for session 4
 db3ca4a feat: username-based Canton wallet connect — allocate party + FingerprintMapping on demand
 d6c8258 docs: update context.md and daml-bridge skill for session 3
 644cf2c feat(frontend): canton -> plasma user flow
@@ -450,8 +462,6 @@ d6c8258 docs: update context.md and daml-bridge skill for session 3
 e5b4500 fix(relayer): resolve BridgeState ID fresh on every relay; fix fingerprint DB lookup
 8136e5a feat: add bridge frontend and faucet API
 ae197f5 docs: update context.md to reflect bidirectional bridge implementation
-55acf9d fix(relayer): support Canton party hash lookup in getHoldingsByFingerprint
-4011cb3 feat(relayer): add Canton→Plasma withdrawal watcher and query controllers
 ```
 
 ---
@@ -493,7 +503,7 @@ bash scripts/e2e-canton-to-plasma-test.sh
 
 4. **Subgraph Alchemy RPC**: `FORK_RPC` in `local-setup.sh` is hardcoded. Should be moved to an env var.
 
-5. **Partial holding withdrawal**: Canton→Plasma withdrawals consume the full holding. Splitting a holding (CIP56Holding.Split choice) before `DepositToPlasma` is not surfaced in the frontend.
+5. ~~**Partial holding withdrawal**~~ — **Done (session 5)**. See POST /canton/withdraw below.
 
 ---
 

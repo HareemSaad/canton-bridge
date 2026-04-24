@@ -81,7 +81,7 @@ export async function connectCantonParty(
 
 export async function submitWithdrawal(params: {
   fingerprint: string;
-  holdingId: string;
+  holdingIds: string[];
   amount: string;
   evmRecipient: string;
 }): Promise<{ updateId: string }> {

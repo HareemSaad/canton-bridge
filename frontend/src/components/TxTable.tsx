@@ -9,6 +9,7 @@ type UnifiedRow = {
   isRawAmount: boolean;
   status: string;
   type: 'deposit' | 'receive';
+  blockTimestamp?: string;
 };
 
 function formatAmount(amount: string, isRaw: boolean): string {
@@ -54,6 +55,10 @@ type Props = {
   typeLabels?: { deposit?: string; receive?: string };
 };
 
+function sortKey(row: UnifiedRow): number {
+  return row.blockTimestamp ? parseInt(row.blockTimestamp) || 0 : 0;
+}
+
 export function TxTable({ deposits, withdrawals, emptyMessage = 'No transactions', typeLabels }: Props) {
   const rows: UnifiedRow[] = [
     ...deposits.map((d) => ({
@@ -64,6 +69,7 @@ export function TxTable({ deposits, withdrawals, emptyMessage = 'No transactions
       isRawAmount: true,
       status: d.status,
       type: 'deposit' as const,
+      blockTimestamp: d.blockTimestamp,
     })),
     ...withdrawals.map((w) => ({
       key: w.contractId,
@@ -74,7 +80,7 @@ export function TxTable({ deposits, withdrawals, emptyMessage = 'No transactions
       status: w.status,
       type: 'receive' as const,
     })),
-  ];
+  ].sort((a, b) => sortKey(b) - sortKey(a));
 
   if (rows.length === 0) {
     return <div className="empty-state">{emptyMessage}</div>;
