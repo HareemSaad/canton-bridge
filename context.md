@@ -1,6 +1,6 @@
 # Canton-Bridge Project Context
 
-> Updated 2026-04-24 (session 5). Drop into a fresh Claude Code session and say "read context.md".
+> Updated 2026-04-24 (session 6). Drop into a fresh Claude Code session and say "read context.md".
 
 ---
 
@@ -72,7 +72,10 @@ canton-bridge/
 │       ├── watcher/watcher.service.ts        # Plasma→Canton poller
 │       ├── withdrawal/
 │       │   ├── withdrawal-watcher.service.ts # Canton→Plasma poller
-│       │   └── withdrawal-watcher.module.ts
+│       │   ├── withdrawal-watcher.module.ts
+│       │   ├── withdrawal-recovery.service.ts    # Admin: list/retry/correct failed events
+│       │   ├── withdrawal-recovery.controller.ts # GET+POST /admin/recovery/*
+│       │   └── withdrawal-recovery.module.ts
 │       ├── canton/
 │       │   ├── canton.service.ts             # resolveForRelay (fingerprint+BridgeState) + relay
 │       │   ├── canton-query.service.ts       # Read-only Canton ledger queries
@@ -143,8 +146,10 @@ DepositToPlasma (signatory=user, observer=issuer):
     → create DepositToPlasmaEvent { status=DepositPending }
 
 DepositToPlasmaEvent (signatory=issuer, observer=user):
-  choice Complete(evmTxHash) → status=DepositCompleted(evmTxHash)
-  choice Fail(reason)        → status=DepositFailed(reason)
+  choice Complete(evmTxHash)           → status=DepositCompleted(evmTxHash)
+  choice Fail(reason)                  → status=DepositFailed(reason)
+  choice Retry                         → status=DepositPending  (relayer retries)
+  choice CorrectAndRetry(newEvmRecipient) → corrects address + status=DepositPending
 ```
 
 The withdrawal is user-initiated (user creates `DepositToPlasma`). The relayer accepts, burns, relays.
@@ -236,6 +241,9 @@ All require `Content-Type: application/json` is not needed (GET). EVM address pa
 | GET | `/transactions?depositor=0x...` | Plasma→Canton deposits sent by this EVM address (from DB) |
 | GET | `/transactions?fingerprint=<hex>` | Plasma→Canton deposits + Canton→Plasma withdrawals by this fingerprint |
 | GET | `/transactions?evmRecipient=0x...` | Canton→Plasma withdrawals targeting this EVM address (from Canton ledger) |
+| GET | `/admin/recovery/failed` | List all `DepositToPlasmaEvent` contracts in `DepositFailed` state |
+| POST | `/admin/recovery/:contractId/retry` | Reset a failed event to `DepositPending` as-is (transient failure) |
+| POST | `/admin/recovery/:contractId/correct` | Correct `evmRecipient` + reset to `DepositPending`. Body: `{ evmRecipient }` |
 
 Params on `/transactions` can be combined. Invalid EVM addresses return 400.
 
@@ -338,7 +346,7 @@ The subgraph returns `fingerprint` as `Bytes!` → The Graph serializes `Bytes` 
 ### Subgraph "has not started syncing yet"
 
 **Cause**: Gateway `startBlock: 0` → scans from genesis → Alchemy rate-limited.
-**Fix**: CantonBridge source is now set to address `0x59acb2967cc50c25b9d12b4b329e4da94054a897` startBlock `21199443`. Gateway source still has a placeholder address but its startBlock is now `21199443`. `local-setup.sh` also handles this automatically.
+**Fix**: CantonBridge source is now set to address `0x59acb2967cc50c25b9d12b4b329e4da94054a897` startBlock `21223930`. Gateway source still has a placeholder address but its startBlock is now `21223930`. `local-setup.sh` also handles this automatically.
 
 ### graph-node reorg loop from previous run
 
@@ -453,7 +461,8 @@ return BigInt(whole) * BigInt(10 ** decimals) + BigInt(frac.padEnd(decimals, '0'
 ## Git History
 
 ```
-(session 5) feat: partial/multi-holding withdrawals; hide in-flight holdings; sort txns by timestamp
+(session 6) feat: withdrawal recovery — Retry/CorrectAndRetry Daml choices + admin API; frontend UX fixes
+e0e606d feat: partial/multi-holding withdrawals, hide in-flight holdings, sort txns by timestamp
 4cef531 docs: update context.md and daml-bridge skill for session 4
 db3ca4a feat: username-based Canton wallet connect — allocate party + FingerprintMapping on demand
 d6c8258 docs: update context.md and daml-bridge skill for session 3

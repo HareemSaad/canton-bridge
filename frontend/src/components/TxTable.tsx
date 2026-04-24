@@ -13,13 +13,17 @@ type UnifiedRow = {
 };
 
 function formatAmount(amount: string, isRaw: boolean): string {
-  if (!isRaw) return `${amount} mUSDC`;
   try {
-    const raw = BigInt(amount);
-    const divisor = BigInt(10 ** TOKEN_DECIMALS);
-    const whole = raw / divisor;
-    const frac = (raw % divisor).toString().padStart(TOKEN_DECIMALS, '0');
-    return `${whole}.${frac} mUSDC`;
+    if (isRaw) {
+      const raw = BigInt(amount);
+      const divisor = BigInt(10 ** TOKEN_DECIMALS);
+      const whole = raw / divisor;
+      const frac = (raw % divisor).toString().padStart(TOKEN_DECIMALS, '0');
+      return `${whole}.${frac} mUSDC`;
+    }
+    // Canton Decimal string (e.g. "50.0000000000") — normalise to 6 dp
+    const [whole, frac = ''] = amount.split('.');
+    return `${whole}.${frac.padEnd(TOKEN_DECIMALS, '0').slice(0, TOKEN_DECIMALS)} mUSDC`;
   } catch {
     return `${amount}`;
   }
@@ -56,7 +60,10 @@ type Props = {
 };
 
 function sortKey(row: UnifiedRow): number {
-  return row.blockTimestamp ? parseInt(row.blockTimestamp) || 0 : 0;
+  // Rows without a timestamp (Canton withdrawals) sort to the top — they are
+  // always more recent than the deposits that funded them.
+  if (!row.blockTimestamp) return Number.MAX_SAFE_INTEGER;
+  return parseInt(row.blockTimestamp) || 0;
 }
 
 export function TxTable({ deposits, withdrawals, emptyMessage = 'No transactions', typeLabels }: Props) {

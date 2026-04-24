@@ -72,6 +72,12 @@ export default function PlasmaPage() {
     }
   }, [wallet.address, loadBalance, loadTransactions]);
 
+  useEffect(() => {
+    if (!wallet.address) return;
+    const id = setInterval(() => void loadTransactions(), 30_000);
+    return () => clearInterval(id);
+  }, [wallet.address, loadTransactions]);
+
   const handleFaucet = async () => {
     if (!wallet.address) return;
     setFaucet({ loading: true });

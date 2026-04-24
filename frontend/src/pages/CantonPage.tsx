@@ -84,9 +84,12 @@ export default function CantonPage() {
 
   useEffect(() => {
     if (!activeFp) return;
-    const id = setInterval(() => void loadTxs(activeFp, false), TX_POLL_MS);
+    const id = setInterval(() => {
+      void loadTxs(activeFp, false);
+      void loadHoldings(activeFp);
+    }, TX_POLL_MS);
     return () => clearInterval(id);
-  }, [activeFp, loadTxs]);
+  }, [activeFp, loadTxs, loadHoldings]);
 
   const handleConnect = async () => {
     const name = usernameInput.trim();
@@ -160,9 +163,10 @@ export default function CantonPage() {
   const effectiveAmount = withdrawAmount.trim() || (totalSelectedRaw > 0n ? formatDecimal(totalSelectedRaw) : '');
   const amountRaw = effectiveAmount ? (() => { try { return parseDecimal(effectiveAmount); } catch { return 0n; } })() : 0n;
   const amountValid = amountRaw > 0n && amountRaw <= totalSelectedRaw;
+  const evmRecipientValid = /^0x[0-9a-fA-F]{40}$/.test(evmRecipient.trim());
 
   const handleWithdraw = async () => {
-    if (!selectedIds.size || !amountValid || !evmRecipient.trim() || !activeFp) return;
+    if (!selectedIds.size || !amountValid || !evmRecipientValid || !activeFp) return;
     setWithdraw({ loading: true });
     try {
       const result = await submitWithdrawal({
@@ -176,12 +180,13 @@ export default function CantonPage() {
       setWithdrawAmount('');
       setEvmRecipient('');
       void loadHoldings(activeFp);
+      void loadTxs(activeFp, false);
     } catch (err: unknown) {
       setWithdraw({ loading: false, error: (err as Error).message ?? 'Withdrawal failed' });
     }
   };
 
-  const hasLoaded = holdings !== null || txs !== null;
+  const hasLoaded = !!activeFp;
 
   return (
     <div className="page">
@@ -279,7 +284,16 @@ export default function CantonPage() {
         <>
           <div className="actions-grid">
             <section className="card">
-              <h2>Your Holdings</h2>
+              <div className="card-header">
+                <h2>Your Holdings</h2>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => void loadHoldings(activeFp)}
+                  disabled={holdingsLoading}
+                >
+                  {holdingsLoading ? 'Refreshing…' : 'Refresh'}
+                </button>
+              </div>
               {holdingsLoading ? (
                 <p className="text-muted">Loading…</p>
               ) : holdings?.length === 0 ? (
@@ -359,14 +373,19 @@ export default function CantonPage() {
                       className="input"
                       placeholder="0x..."
                       value={evmRecipient}
-                      onChange={(e) => setEvmRecipient(e.target.value)}
+                      onChange={(e) => { setEvmRecipient(e.target.value); setWithdraw({ loading: false }); }}
                     />
-                    <span className="field-hint">Plasma address that will receive the unlocked tokens</span>
+                    <span className="field-hint">Plasma address that will receive the unlocked tokens (20-byte 0x… address, not your fingerprint)</span>
+                    {evmRecipient.trim() && !evmRecipientValid && (
+                      <p className="error-msg" style={{ marginTop: '4px' }}>
+                        Must be a valid 20-byte Ethereum address (0x followed by 40 hex characters)
+                      </p>
+                    )}
                   </div>
                   <button
                     className="btn btn-primary"
                     onClick={() => void handleWithdraw()}
-                    disabled={withdraw.loading || !evmRecipient.trim() || !amountValid}
+                    disabled={withdraw.loading || !evmRecipientValid || !amountValid}
                   >
                     {withdraw.loading ? 'Submitting…' : 'Withdraw to Plasma'}
                   </button>

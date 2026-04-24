@@ -95,6 +95,9 @@ export function useWallet(): WalletState {
         setSigner(null);
       } else {
         setAddress(accs[0]);
+        // Refresh signer so it points to the newly selected account.
+        const provider = new ethers.BrowserProvider(window.ethereum as ethers.Eip1193Provider);
+        provider.getSigner().then(setSigner).catch(() => setSigner(null));
       }
     };
 

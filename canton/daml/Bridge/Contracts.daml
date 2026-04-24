@@ -113,3 +113,17 @@ template DepositToPlasmaEvent
       controller issuer
       do create this with status = DepositFailed reason
 
+    -- | Reset a transiently-failed event back to pending so the relayer retries.
+    choice Retry
+      : ContractId DepositToPlasmaEvent
+      with {}
+      controller issuer
+      do create this with status = DepositPending
+
+    -- | Correct the EVM recipient and reset to pending (e.g. wrong address was given).
+    choice CorrectAndRetry
+      : ContractId DepositToPlasmaEvent
+      with newEvmRecipient : Text
+      controller issuer
+      do create this with evmRecipient = newEvmRecipient; status = DepositPending
+

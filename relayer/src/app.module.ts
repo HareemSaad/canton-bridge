@@ -10,6 +10,7 @@ import { BridgeTransaction } from './database/entities/bridge-transaction.entity
 import { WatcherModule } from './watcher/watcher.module';
 import { SubgraphModule } from './subgraph/subgraph.module';
 import { WithdrawalWatcherModule } from './withdrawal/withdrawal-watcher.module';
+import { WithdrawalRecoveryModule } from './withdrawal/withdrawal-recovery.module';
 import { PlasmaModule } from './plasma/plasma.module';
 import { TransactionsModule } from './transactions/transactions.module';
 
@@ -22,6 +23,7 @@ import { TransactionsModule } from './transactions/transactions.module';
     CantonModule,
     WatcherModule,
     WithdrawalWatcherModule,
+    WithdrawalRecoveryModule,
     PlasmaModule,
     TransactionsModule,
   ],
