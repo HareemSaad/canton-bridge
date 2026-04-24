@@ -1,6 +1,6 @@
 # Canton-Bridge Project Context
 
-> Updated 2026-04-24 (session 2). Drop into a fresh Claude Code session and say "read context.md".
+> Updated 2026-04-24 (session 3). Drop into a fresh Claude Code session and say "read context.md".
 
 ---
 
@@ -91,9 +91,9 @@ canton-bridge/
 │   ├── src/
 │   │   ├── pages/
 │   │   │   ├── PlasmaPage.tsx      # Wallet connect, faucet, bridge form, tx history
-│   │   │   └── CantonPage.tsx      # Fingerprint lookup, tx history
-│   │   ├── components/TxTable.tsx  # Unified deposit+withdrawal table
-│   │   ├── hooks/useWallet.ts      # MetaMask connection (auto-adds chain 9746)
+│   │   │   └── CantonPage.tsx      # Fingerprint lookup, holdings list, withdraw form, tx history
+│   │   ├── components/TxTable.tsx  # Unified deposit+withdrawal table (typeLabels prop for perspective)
+│   │   ├── hooks/useWallet.ts      # MetaMask connection (auto-adds chain 9746, auto-reconnect)
 │   │   └── lib/
 │   │       ├── api.ts              # Relayer API client
 │   │       └── constants.ts        # Contract addresses, chain config
@@ -220,6 +220,7 @@ All require `Content-Type: application/json` is not needed (GET). EVM address pa
 | GET | `/canton/balance?party=<partyId>` | CIP56Holdings by full Canton party ID |
 | GET | `/canton/balance?fingerprint=<hex>` | Holdings by EVM fingerprint OR Canton party hash suffix |
 | GET | `/canton/stats` | Total Canton supply, holding count, withdrawal event counts |
+| POST | `/canton/withdraw` | Create `DepositToPlasma` on Canton (body: `fingerprint, holdingId, amount, evmRecipient`). Returns `{ updateId }`. Relayer picks it up within one poll cycle (~30s). |
 | POST | `/plasma/faucet?address=0x...` | Mints 1,000 mUSDC to address using the deployer wallet (MockUSDC.mint) |
 | GET | `/transactions?depositor=0x...` | Plasma→Canton deposits sent by this EVM address (from DB) |
 | GET | `/transactions?fingerprint=<hex>` | Plasma→Canton deposits + Canton→Plasma withdrawals by this fingerprint |
@@ -441,14 +442,15 @@ return BigInt(whole) * BigInt(10 ** decimals) + BigInt(frac.padEnd(decimals, '0'
 ## Git History
 
 ```
+af4a435 feat(frontend): fix canton page ux — state persistence, labels, auto-poll
+644cf2c feat(frontend): canton -> plasma user flow
+4d234a4 docs: update context.md and skills for session 2 changes
+e5b4500 fix(relayer): resolve BridgeState ID fresh on every relay; fix fingerprint DB lookup
+8136e5a feat: add bridge frontend and faucet API
+ae197f5 docs: update context.md to reflect bidirectional bridge implementation
 55acf9d fix(relayer): support Canton party hash lookup in getHoldingsByFingerprint
 4011cb3 feat(relayer): add Canton→Plasma withdrawal watcher and query controllers
 b001a0e feat(canton): add DepositToPlasma withdrawal flow; remove legacy dead templates
-ed4ed1a docs(skills): add Canton/Daml bridge skills for Claude Code
-6c54a84 feat(scripts): rewrite local-setup.sh and e2e-test.sh for CantonBridge
-090ebe6 feat(relayer): fingerprint-based MintCommand relay flow
-ac2ff7f feat(subgraph): index CantonBridge events alongside legacy Gateway
-8f9035d feat(canton): update Main.daml setup script and daml.yaml
 ```
 
 ---
@@ -489,6 +491,8 @@ bash scripts/e2e-canton-to-plasma-test.sh
 3. **BridgeState scaling**: `processedTxHashes` is an ever-growing list in a single Daml contract. Needs sharding at high volume.
 
 4. **Subgraph Alchemy RPC**: `FORK_RPC` in `local-setup.sh` is hardcoded. Should be moved to an env var.
+
+5. **Partial holding withdrawal**: Canton→Plasma withdrawals consume the full holding. Splitting a holding (CIP56Holding.Split choice) before `DepositToPlasma` is not surfaced in the frontend.
 
 ---
 

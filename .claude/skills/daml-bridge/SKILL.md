@@ -20,10 +20,10 @@ canton/daml/
   Common/
     Types.daml            — EvmAddress, ChainRef, BridgeDirection, TokenMeta newtypes
     Utils.daml            — isValidAmount, isValidEvmAddress, hasSufficientBalance
-    FingerprintAuth.daml  — FingerprintMapping, PendingDeposit, DepositReceipt
+    FingerprintAuth.daml  — FingerprintMapping only (PendingDeposit/DepositReceipt removed)
   Bridge/
     State.daml            — BridgeState (processedTxHashes replay guard)
-    Contracts.daml        — MintCommand, WithdrawalRequest, WithdrawalEvent
+    Contracts.daml        — MintCommand, DepositToPlasma, DepositToPlasmaEvent
 ```
 
 ## Key Patterns
