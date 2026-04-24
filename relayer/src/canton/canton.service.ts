@@ -262,6 +262,60 @@ export class CantonService implements OnModuleInit {
     return match!.contractEntry!.JsActiveContract!.createdEvent.createArgument.userParty;
   }
 
+  /**
+   * Create a DepositToPlasma contract on the Canton ledger on behalf of the user.
+   * The relayer acts as the user party (sandbox userId has all-party rights).
+   * The WithdrawalWatcherService will pick this up within one poll cycle.
+   */
+  async createWithdrawal(params: {
+    fingerprint: string;
+    holdingId: string;
+    amount: string;
+    evmRecipient: string;
+  }): Promise<{ updateId: string }> {
+    const fingerprintHex = params.fingerprint.startsWith('0x')
+      ? params.fingerprint.slice(2).toLowerCase()
+      : params.fingerprint.toLowerCase();
+
+    const userParty = await this.resolveFingerprint(params.fingerprint);
+
+    const body = {
+      actAs: [userParty],
+      userId: this.userId,
+      commandId: `withdraw-${Date.now()}-${fingerprintHex.slice(0, 8)}`,
+      commands: [
+        {
+          CreateCommand: {
+            templateId: '#canton-bridge:Bridge.Contracts:DepositToPlasma',
+            createArguments: {
+              user: userParty,
+              issuer: this.partyId,
+              holdingId: params.holdingId,
+              amount: params.amount,
+              evmRecipient: params.evmRecipient,
+              fingerprint: fingerprintHex,
+            },
+          },
+        },
+      ],
+    };
+
+    const res = await fetch(`${this.baseUrl}/v2/commands/submit-and-wait`, {
+      method: 'POST',
+      headers: this.buildHeaders(),
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Canton responded ${res.status}: ${text}`);
+    }
+
+    const data = (await res.json()) as { updateId: string };
+    this.logger.log(`DepositToPlasma created updateId=${data.updateId} holding=${params.holdingId}`);
+    return { updateId: data.updateId };
+  }
+
   // ─── helpers ──────────────────────────────────────────────────────────────
 
   private buildHeaders(): Record<string, string> {

@@ -1,9 +1,13 @@
-import { Controller, Get, Query, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Query, Body, BadRequestException } from '@nestjs/common';
 import { CantonQueryService } from './canton-query.service';
+import { CantonService } from './canton.service';
 
 @Controller('canton')
 export class CantonController {
-  constructor(private readonly cantonQuery: CantonQueryService) {}
+  constructor(
+    private readonly cantonQuery: CantonQueryService,
+    private readonly canton: CantonService,
+  ) {}
 
   /**
    * GET /canton/balance?party=<partyId>  — lookup by full Canton party ID
@@ -38,5 +42,26 @@ export class CantonController {
   @Get('stats')
   async getStats() {
     return this.cantonQuery.getStats();
+  }
+
+  /**
+   * POST /canton/withdraw
+   * Creates a DepositToPlasma contract on Canton initiating a Canton→Plasma withdrawal.
+   * Body: { fingerprint, holdingId, amount, evmRecipient }
+   */
+  @Post('withdraw')
+  async createWithdrawal(
+    @Body() body: { fingerprint?: string; holdingId?: string; amount?: string; evmRecipient?: string },
+  ) {
+    if (!body.fingerprint) throw new BadRequestException('fingerprint is required');
+    if (!body.holdingId) throw new BadRequestException('holdingId is required');
+    if (!body.amount) throw new BadRequestException('amount is required');
+    if (!body.evmRecipient) throw new BadRequestException('evmRecipient is required');
+    return this.canton.createWithdrawal({
+      fingerprint: body.fingerprint,
+      holdingId: body.holdingId,
+      amount: body.amount,
+      evmRecipient: body.evmRecipient,
+    });
   }
 }

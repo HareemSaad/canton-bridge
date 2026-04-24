@@ -28,6 +28,20 @@ export function useWallet(): WalletState {
   const [error, setError] = useState<string | null>(null);
   const [signer, setSigner] = useState<ethers.JsonRpcSigner | null>(null);
 
+  // Auto-restore if already authorised (no prompt)
+  useEffect(() => {
+    if (!window.ethereum) return;
+    (window.ethereum.request({ method: 'eth_accounts' }) as Promise<string[]>)
+      .then(async (accs) => {
+        if (accs.length === 0) return;
+        const provider = new ethers.BrowserProvider(window.ethereum as ethers.Eip1193Provider);
+        const s = await provider.getSigner();
+        setSigner(s);
+        setAddress(accs[0]);
+      })
+      .catch(() => {});
+  }, []);
+
   const connect = useCallback(async () => {
     if (!window.ethereum) {
       setError('MetaMask not detected. Please install MetaMask.');

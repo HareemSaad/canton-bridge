@@ -51,9 +51,10 @@ type Props = {
   deposits: DepositTx[];
   withdrawals: WithdrawalTx[];
   emptyMessage?: string;
+  typeLabels?: { deposit?: string; receive?: string };
 };
 
-export function TxTable({ deposits, withdrawals, emptyMessage = 'No transactions' }: Props) {
+export function TxTable({ deposits, withdrawals, emptyMessage = 'No transactions', typeLabels }: Props) {
   const rows: UnifiedRow[] = [
     ...deposits.map((d) => ({
       key: d.id,
@@ -108,7 +109,9 @@ export function TxTable({ deposits, withdrawals, emptyMessage = 'No transactions
               </td>
               <td>
                 <span className={`type-tag type-${row.type}`}>
-                  {row.type === 'deposit' ? 'Deposit' : 'Receive'}
+                  {row.type === 'deposit'
+                    ? (typeLabels?.deposit ?? 'Deposit')
+                    : (typeLabels?.receive ?? 'Receive')}
                 </span>
               </td>
             </tr>
