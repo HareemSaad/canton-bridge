@@ -1,6 +1,6 @@
 # Canton-Bridge Project Context
 
-> Updated 2026-04-24 (session 3). Drop into a fresh Claude Code session and say "read context.md".
+> Updated 2026-04-24 (session 4). Drop into a fresh Claude Code session and say "read context.md".
 
 ---
 
@@ -91,7 +91,7 @@ canton-bridge/
 │   ├── src/
 │   │   ├── pages/
 │   │   │   ├── PlasmaPage.tsx      # Wallet connect, faucet, bridge form, tx history
-│   │   │   └── CantonPage.tsx      # Fingerprint lookup, holdings list, withdraw form, tx history
+│   │   │   └── CantonPage.tsx      # Username connect/disconnect, holdings list, withdraw form, tx history
 │   │   ├── components/TxTable.tsx  # Unified deposit+withdrawal table (typeLabels prop for perspective)
 │   │   ├── hooks/useWallet.ts      # MetaMask connection (auto-adds chain 9746, auto-reconnect)
 │   │   └── lib/
@@ -220,6 +220,7 @@ All require `Content-Type: application/json` is not needed (GET). EVM address pa
 | GET | `/canton/balance?party=<partyId>` | CIP56Holdings by full Canton party ID |
 | GET | `/canton/balance?fingerprint=<hex>` | Holdings by EVM fingerprint OR Canton party hash suffix |
 | GET | `/canton/stats` | Total Canton supply, holding count, withdrawal event counts |
+| POST | `/canton/party/connect` | Create or connect a Canton party by username. Body: `{ username }`. Returns `{ partyId, fingerprint, created }`. Derives fingerprint as `keccak256(utf8(username))`. Allocates a new Canton party + `FingerprintMapping` if none exists. |
 | POST | `/canton/withdraw` | Create `DepositToPlasma` on Canton (body: `fingerprint, holdingId, amount, evmRecipient`). Returns `{ updateId }`. Relayer picks it up within one poll cycle (~30s). |
 | POST | `/plasma/faucet?address=0x...` | Mints 1,000 mUSDC to address using the deployer wallet (MockUSDC.mint) |
 | GET | `/transactions?depositor=0x...` | Plasma→Canton deposits sent by this EVM address (from DB) |
@@ -327,7 +328,7 @@ The subgraph returns `fingerprint` as `Bytes!` → The Graph serializes `Bytes` 
 ### Subgraph "has not started syncing yet"
 
 **Cause**: Gateway `startBlock: 0` → scans from genesis → Alchemy rate-limited.
-**Fix**: Set both data source `startBlock` to CantonBridge deployment block. `local-setup.sh` does this automatically.
+**Fix**: CantonBridge source is now set to address `0x59acb2967cc50c25b9d12b4b329e4da94054a897` startBlock `21199443`. Gateway source still has a placeholder address but its startBlock is now `21199443`. `local-setup.sh` also handles this automatically.
 
 ### graph-node reorg loop from previous run
 
@@ -442,7 +443,8 @@ return BigInt(whole) * BigInt(10 ** decimals) + BigInt(frac.padEnd(decimals, '0'
 ## Git History
 
 ```
-af4a435 feat(frontend): fix canton page ux — state persistence, labels, auto-poll
+db3ca4a feat: username-based Canton wallet connect — allocate party + FingerprintMapping on demand
+d6c8258 docs: update context.md and daml-bridge skill for session 3
 644cf2c feat(frontend): canton -> plasma user flow
 4d234a4 docs: update context.md and skills for session 2 changes
 e5b4500 fix(relayer): resolve BridgeState ID fresh on every relay; fix fingerprint DB lookup
@@ -450,7 +452,6 @@ e5b4500 fix(relayer): resolve BridgeState ID fresh on every relay; fix fingerpri
 ae197f5 docs: update context.md to reflect bidirectional bridge implementation
 55acf9d fix(relayer): support Canton party hash lookup in getHoldingsByFingerprint
 4011cb3 feat(relayer): add Canton→Plasma withdrawal watcher and query controllers
-b001a0e feat(canton): add DepositToPlasma withdrawal flow; remove legacy dead templates
 ```
 
 ---

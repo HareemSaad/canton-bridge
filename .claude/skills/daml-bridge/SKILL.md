@@ -133,6 +133,42 @@ curl -X POST http://localhost:7575/v2/commands/submit-and-wait \
 }
 ```
 
+## Party Allocation (Canton v2 API)
+
+```bash
+# Allocate a new party with a hint
+curl -X POST http://localhost:7575/v2/parties \
+  -H "Content-Type: application/json" \
+  -d '{ "partyIdHint": "alice", "displayName": "alice" }'
+# → { "partyDetails": { "party": "alice::122...", "displayName": "alice" } }
+```
+
+**`POST /canton/party/connect`** (relayer endpoint) wraps this:
+- Computes `fingerprint = keccak256(utf8(username)).slice(2)` (no 0x, same as `cast keccak "username"`)
+- Checks for existing `FingerprintMapping` first (idempotent)
+- If not found: allocates party via `/v2/parties`, then creates `FingerprintMapping` via `submit-and-wait`
+- Returns `{ partyId, fingerprint, created }`
+
+`createFingerprintMapping` body pattern:
+```json
+{
+  "actAs": ["<bridgeOperatorPartyId>"],
+  "userId": "sandbox",
+  "commandId": "create-fp-<first8hex>-<timestamp>",
+  "commands": [{
+    "CreateCommand": {
+      "templateId": "#canton-bridge:Common.FingerprintAuth:FingerprintMapping",
+      "createArguments": {
+        "issuer": "<bridgeOperatorPartyId>",
+        "userParty": "<newPartyId>",
+        "fingerprint": "<64-char-hex-no-0x>",
+        "evmAddress": null
+      }
+    }
+  }]
+}
+```
+
 ## MintCommand Flow (Plasma → Canton)
 
 1. Relayer picks up `DepositToCanton` event (fingerprint, amount, txHash)
