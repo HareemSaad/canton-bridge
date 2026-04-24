@@ -66,6 +66,19 @@ export async function getCantonBalance(fingerprint: string): Promise<{ holdings:
   return data;
 }
 
+export async function connectCantonParty(
+  username: string,
+): Promise<{ partyId: string; fingerprint: string; created: boolean }> {
+  const res = await fetch(`${API}/canton/party/connect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.message ?? 'Failed to connect Canton wallet');
+  return data;
+}
+
 export async function submitWithdrawal(params: {
   fingerprint: string;
   holdingId: string;

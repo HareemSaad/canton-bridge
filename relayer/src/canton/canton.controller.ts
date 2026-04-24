@@ -45,6 +45,20 @@ export class CantonController {
   }
 
   /**
+   * POST /canton/party/connect
+   * Create or connect a Canton party by username.
+   * Body: { username }
+   * Returns { partyId, fingerprint, created }
+   */
+  @Post('party/connect')
+  async connectOrCreateParty(
+    @Body() body: { username?: string },
+  ) {
+    if (!body.username?.trim()) throw new BadRequestException('username is required');
+    return this.canton.createOrConnectParty(body.username.trim());
+  }
+
+  /**
    * POST /canton/withdraw
    * Creates a DepositToPlasma contract on Canton initiating a Canton→Plasma withdrawal.
    * Body: { fingerprint, holdingId, amount, evmRecipient }

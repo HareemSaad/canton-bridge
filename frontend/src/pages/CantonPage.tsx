@@ -1,13 +1,26 @@
 import { useState, useEffect, useCallback } from 'react';
 import { TxTable } from '../components/TxTable';
-import { getCantonBalance, getTransactions, submitWithdrawal } from '../lib/api';
+import { connectCantonParty, getCantonBalance, getTransactions, submitWithdrawal } from '../lib/api';
 import type { HoldingInfo, DepositTx, WithdrawalTx } from '../lib/api';
 
-const STORAGE_KEY = 'canton-fp';
+const SESSION_KEY = 'canton-session';
 const TX_POLL_MS = 30_000;
 
-function getSavedFp(): string {
-  try { return sessionStorage.getItem(STORAGE_KEY) ?? ''; } catch { return ''; }
+type CantonSession = { username: string; partyId: string; fingerprint: string };
+
+function loadSession(): CantonSession | null {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    return raw ? (JSON.parse(raw) as CantonSession) : null;
+  } catch { return null; }
+}
+
+function saveSession(s: CantonSession) {
+  try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(s)); } catch { /* ignore */ }
+}
+
+function clearSession() {
+  try { sessionStorage.removeItem(SESSION_KEY); } catch { /* ignore */ }
 }
 
 function formatCantonAmount(amount: string): string {
@@ -20,10 +33,14 @@ function shorten(s: string): string {
 }
 
 export default function CantonPage() {
-  const saved = getSavedFp();
-  const [inputFp, setInputFp] = useState(saved);
-  const [activeFp, setActiveFp] = useState(saved);
+  const [session, setSession] = useState<CantonSession | null>(loadSession);
+  const [usernameInput, setUsernameInput] = useState('');
+  const [connecting, setConnecting] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
+  // Holdings & tx state — driven by session.fingerprint
+  const [activeFp, setActiveFp] = useState(session?.fingerprint ?? '');
   const [holdingsLoading, setHoldingsLoading] = useState(false);
   const [holdingsError, setHoldingsError] = useState<string | null>(null);
   const [holdings, setHoldings] = useState<HoldingInfo[] | null>(null);
@@ -48,7 +65,6 @@ export default function CantonPage() {
     }
   }, []);
 
-  // showSpinner=false for silent background polls so the UI doesn't flicker
   const loadTxs = useCallback(async (fp: string, showSpinner = true) => {
     if (showSpinner) setTxLoading(true);
     try {
@@ -59,33 +75,58 @@ export default function CantonPage() {
     }
   }, []);
 
-  // Load both when activeFp changes (on lookup or on mount if saved fp exists)
   useEffect(() => {
     if (!activeFp) return;
-    try { sessionStorage.setItem(STORAGE_KEY, activeFp); } catch { /* ignore */ }
     void loadHoldings(activeFp);
     void loadTxs(activeFp);
   }, [activeFp, loadHoldings, loadTxs]);
 
-  // Silent 30s poll while fingerprint is active (matches relayer poll cycle)
   useEffect(() => {
     if (!activeFp) return;
     const id = setInterval(() => void loadTxs(activeFp, false), TX_POLL_MS);
     return () => clearInterval(id);
   }, [activeFp, loadTxs]);
 
-  const handleLookup = useCallback(() => {
-    const fp = inputFp.trim();
-    if (!fp) return;
+  const handleConnect = async () => {
+    const name = usernameInput.trim();
+    if (!name) return;
+    setConnecting(true);
+    setConnectError(null);
+    try {
+      const { partyId, fingerprint } = await connectCantonParty(name);
+      const s: CantonSession = { username: name, partyId, fingerprint };
+      saveSession(s);
+      setSession(s);
+      setActiveFp(fingerprint);
+      setSelectedHolding(null);
+      setWithdraw({ loading: false });
+      setHoldings(null);
+      setTxs(null);
+    } catch (err: unknown) {
+      setConnectError((err as Error).message ?? 'Failed to connect');
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  const handleDisconnect = () => {
+    clearSession();
+    setSession(null);
+    setActiveFp('');
+    setHoldings(null);
+    setTxs(null);
     setSelectedHolding(null);
     setWithdraw({ loading: false });
-    if (fp === activeFp) {
-      void loadHoldings(fp);
-      void loadTxs(fp);
-    } else {
-      setActiveFp(fp);
-    }
-  }, [inputFp, activeFp, loadHoldings, loadTxs]);
+    setUsernameInput('');
+  };
+
+  const handleCopyKey = () => {
+    if (!session) return;
+    void navigator.clipboard.writeText(`0x${session.fingerprint}`).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
 
   const handleWithdraw = async () => {
     if (!selectedHolding || !evmRecipient.trim() || !activeFp) return;
@@ -110,31 +151,96 @@ export default function CantonPage() {
 
   return (
     <div className="page">
+      {/* ── Wallet section ──────────────────────────────────────────── */}
       <section className="card">
-        <h2>Canton Balance</h2>
-        <p className="text-muted">
-          Enter your Canton fingerprint to view holdings and bridge tokens back to Plasma.
-        </p>
-        <div className="lookup-row">
-          <input
-            type="text"
-            className="input"
-            placeholder="0x... (32-byte keccak256 fingerprint)"
-            value={inputFp}
-            onChange={(e) => setInputFp(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleLookup()}
-          />
-          <button
-            className="btn btn-primary"
-            onClick={handleLookup}
-            disabled={holdingsLoading || !inputFp.trim()}
-          >
-            {holdingsLoading ? 'Loading…' : 'Lookup'}
-          </button>
-        </div>
-        {holdingsError && <p className="error-msg">{holdingsError}</p>}
+        <h2>Canton Wallet</h2>
+
+        {!session ? (
+          <>
+            <p className="text-muted">
+              Enter a username to create or connect your Canton wallet.
+              New users get a fresh Canton party; returning users reconnect to their existing one.
+            </p>
+            <div className="lookup-row">
+              <input
+                type="text"
+                className="input"
+                placeholder="e.g. alice"
+                value={usernameInput}
+                onChange={(e) => setUsernameInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && void handleConnect()}
+                disabled={connecting}
+              />
+              <button
+                className="btn btn-primary"
+                onClick={() => void handleConnect()}
+                disabled={connecting || !usernameInput.trim()}
+              >
+                {connecting ? 'Connecting…' : 'Create / Connect'}
+              </button>
+            </div>
+            {connectError && <p className="error-msg">{connectError}</p>}
+          </>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span style={{ color: 'var(--accent-hover)', fontWeight: 600 }}>✓ Connected as: {session.username}</span>
+            </div>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label>Canton Party</label>
+              <div style={{
+                background: 'var(--bg)',
+                border: '1px solid var(--border)',
+                borderRadius: '8px',
+                padding: '8px 12px',
+                fontFamily: 'var(--mono)',
+                fontSize: '12px',
+                color: 'var(--text-muted)',
+                wordBreak: 'break-all',
+              }}>
+                {session.partyId}
+              </div>
+            </div>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label>Bridge Key (EVM bytes32)</label>
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+              }}>
+                <div style={{
+                  flex: 1,
+                  background: 'var(--bg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: '8px',
+                  padding: '8px 12px',
+                  fontFamily: 'var(--mono)',
+                  fontSize: '12px',
+                  color: 'var(--text-muted)',
+                  wordBreak: 'break-all',
+                }}>
+                  {`0x${session.fingerprint}`}
+                </div>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={handleCopyKey}
+                  style={{ whiteSpace: 'nowrap' }}
+                >
+                  {copied ? 'Copied!' : 'Copy'}
+                </button>
+              </div>
+              <span className="field-hint">Paste this as the fingerprint when depositing on the Plasma page.</span>
+            </div>
+            <div>
+              <button className="btn btn-ghost btn-sm" onClick={handleDisconnect}>
+                Disconnect
+              </button>
+            </div>
+          </div>
+        )}
       </section>
 
+      {/* ── Holdings + Withdrawal + Txs (unchanged, driven by activeFp) ── */}
       {hasLoaded && (
         <>
           <div className="actions-grid">
@@ -143,7 +249,7 @@ export default function CantonPage() {
               {holdingsLoading ? (
                 <p className="text-muted">Loading…</p>
               ) : holdings?.length === 0 ? (
-                <p className="text-muted">No active holdings for this fingerprint.</p>
+                <p className="text-muted">No active holdings for this account.</p>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                   {holdings?.map((h) => (
@@ -181,6 +287,7 @@ export default function CantonPage() {
                   <span className="field-hint">Click a holding to select it for withdrawal.</span>
                 </div>
               )}
+              {holdingsError && <p className="error-msg">{holdingsError}</p>}
             </section>
 
             <section className="card">
@@ -221,7 +328,7 @@ export default function CantonPage() {
                   </div>
                   <button
                     className="btn btn-primary"
-                    onClick={handleWithdraw}
+                    onClick={() => void handleWithdraw()}
                     disabled={withdraw.loading || !evmRecipient.trim()}
                   >
                     {withdraw.loading ? 'Submitting…' : 'Withdraw to Plasma'}
@@ -244,7 +351,7 @@ export default function CantonPage() {
               <h2>Transaction History</h2>
               <button
                 className="btn btn-ghost btn-sm"
-                onClick={() => loadTxs(activeFp)}
+                onClick={() => void loadTxs(activeFp)}
                 disabled={txLoading}
               >
                 {txLoading ? 'Refreshing…' : 'Refresh'}
@@ -254,7 +361,7 @@ export default function CantonPage() {
               deposits={txs?.deposits ?? []}
               withdrawals={txs?.withdrawals ?? []}
               typeLabels={{ deposit: 'Receive', receive: 'Withdraw' }}
-              emptyMessage="No transactions found for this fingerprint."
+              emptyMessage="No transactions found for this account."
             />
           </section>
         </>

@@ -1,10 +1,23 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ethers } from 'ethers';
 import { BridgeTransaction } from '../database/entities/bridge-transaction.entity';
 import {
   CantonSubmitRequest,
   CantonSubmitResponse,
 } from './dto/canton-command.dto';
+
+type ContractItem = {
+  contractEntry?: {
+    JsActiveContract?: {
+      createdEvent: {
+        contractId: string;
+        templateId: string;
+        createArgument: Record<string, unknown>;
+      };
+    };
+  };
+};
 
 @Injectable()
 export class CantonService implements OnModuleInit {
@@ -145,17 +158,6 @@ export class CantonService implements OnModuleInit {
       throw new Error(`Failed to query active contracts: ${res.status} ${text}`);
     }
 
-    type ContractItem = {
-      contractEntry?: {
-        JsActiveContract?: {
-          createdEvent: {
-            contractId: string;
-            templateId: string;
-            createArgument: Record<string, unknown>;
-          };
-        };
-      };
-    };
     const items = (await res.json()) as ContractItem[];
 
     let recipient: string | undefined;
@@ -232,24 +234,13 @@ export class CantonService implements OnModuleInit {
       );
     }
 
-    // Response is a JSON array:
-    // [{ contractEntry: { JsActiveContract: { createdEvent: { templateId, createArgument } } } }]
-    type ContractItem = {
-      contractEntry?: {
-        JsActiveContract?: {
-          createdEvent: {
-            templateId: string;
-            createArgument: { fingerprint: string; userParty: string };
-          };
-        };
-      };
-    };
     const items = (await res.json()) as ContractItem[];
 
     const match = items.find((item) => {
       const event = item?.contractEntry?.JsActiveContract?.createdEvent;
       if (!event?.templateId?.includes('FingerprintMapping')) return false;
-      return event.createArgument?.fingerprint?.toLowerCase() === hex;
+      const args = event.createArgument as { fingerprint: string; userParty: string };
+      return args.fingerprint?.toLowerCase() === hex;
     });
 
     if (!match) {
@@ -259,7 +250,8 @@ export class CantonService implements OnModuleInit {
       );
     }
 
-    return match!.contractEntry!.JsActiveContract!.createdEvent.createArgument.userParty;
+    const args = match!.contractEntry!.JsActiveContract!.createdEvent.createArgument as { userParty: string };
+    return args.userParty;
   }
 
   /**
@@ -314,6 +306,121 @@ export class CantonService implements OnModuleInit {
     const data = (await res.json()) as { updateId: string };
     this.logger.log(`DepositToPlasma created updateId=${data.updateId} holding=${params.holdingId}`);
     return { updateId: data.updateId };
+  }
+
+  // ─── wallet creation / connection ─────────────────────────────────────────
+
+  /**
+   * Deterministic fingerprint from username — same formula as local-setup.sh:
+   *   cast keccak "User1"  →  keccak256(utf8("User1"))  →  strip 0x
+   * Returns 64-char hex string (no 0x prefix) suitable for Daml Text storage.
+   */
+  computeFingerprint(username: string): string {
+    return ethers.keccak256(ethers.toUtf8Bytes(username)).slice(2);
+  }
+
+  /**
+   * Create-or-connect a Canton party by username.
+   * If a FingerprintMapping already exists for keccak256(username), returns it.
+   * Otherwise allocates a new party and creates the mapping.
+   */
+  async createOrConnectParty(username: string): Promise<{
+    partyId: string;
+    fingerprint: string;
+    created: boolean;
+  }> {
+    const fpHex = this.computeFingerprint(username);
+
+    // Check for existing FingerprintMapping (inline active-contracts fetch)
+    const items = await this.fetchActiveContractsForParty(this.partyId);
+    for (const item of items) {
+      const ev = item?.contractEntry?.JsActiveContract?.createdEvent;
+      if (!ev?.templateId?.includes('FingerprintMapping')) continue;
+      const args = ev.createArgument as { fingerprint: string; userParty: string };
+      if (args.fingerprint === fpHex) {
+        this.logger.log(`Connecting existing party for username="${username}" fp=${fpHex}`);
+        return { partyId: args.userParty, fingerprint: fpHex, created: false };
+      }
+    }
+
+    // Not found — allocate a new party and create the mapping
+    const partyId = await this.allocateParty(username);
+    await this.createFingerprintMapping(partyId, fpHex);
+    this.logger.log(`Created new party for username="${username}" partyId=${partyId} fp=${fpHex}`);
+    return { partyId, fingerprint: fpHex, created: true };
+  }
+
+  private async allocateParty(hint: string): Promise<string> {
+    const res = await fetch(`${this.baseUrl}/v2/parties`, {
+      method: 'POST',
+      headers: this.buildHeaders(),
+      body: JSON.stringify({ partyIdHint: hint, displayName: hint }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Party allocation failed ${res.status}: ${text}`);
+    }
+    const data = (await res.json()) as { partyDetails?: { party: string } };
+    const party = data.partyDetails?.party;
+    if (!party) throw new Error('Canton returned no party ID');
+    return party;
+  }
+
+  private async createFingerprintMapping(
+    userParty: string,
+    fpHex: string,
+    evmAddress?: string,
+  ): Promise<void> {
+    const body = {
+      actAs: [this.partyId],
+      userId: this.userId,
+      commandId: `create-fp-${fpHex.slice(0, 8)}-${Date.now()}`,
+      commands: [
+        {
+          CreateCommand: {
+            templateId: '#canton-bridge:Common.FingerprintAuth:FingerprintMapping',
+            createArguments: {
+              issuer: this.partyId,
+              userParty,
+              fingerprint: fpHex,
+              evmAddress: evmAddress ?? null,
+            },
+          },
+        },
+      ],
+    };
+    const res = await fetch(`${this.baseUrl}/v2/commands/submit-and-wait`, {
+      method: 'POST',
+      headers: this.buildHeaders(),
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`FingerprintMapping creation failed: ${text}`);
+    }
+  }
+
+  /** Shared active-contracts fetch used by createOrConnectParty. */
+  private async fetchActiveContractsForParty(partyId: string): Promise<ContractItem[]> {
+    const endRes = await fetch(`${this.baseUrl}/v2/state/ledger-end`, {
+      headers: this.buildHeaders(),
+    });
+    if (!endRes.ok) throw new Error(`Failed to fetch ledger-end: ${endRes.status}`);
+    const { offset } = (await endRes.json()) as { offset: string };
+
+    const res = await fetch(`${this.baseUrl}/v2/state/active-contracts`, {
+      method: 'POST',
+      headers: this.buildHeaders(),
+      body: JSON.stringify({
+        activeAtOffset: offset ?? '',
+        filter: { filtersByParty: { [partyId]: {} } },
+      }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Failed to query active contracts: ${res.status} ${text}`);
+    }
+    return (await res.json()) as ContractItem[];
   }
 
   // ─── helpers ──────────────────────────────────────────────────────────────

@@ -9,9 +9,9 @@ dataSources:
     name: CantonBridge
     network: plasma
     source:
-      address: "0x0000000000000000000000000000000000000000" # replace after deployment
+      address: "0x59acb2967cc50c25b9d12b4b329e4da94054a897"
       abi: CantonBridge
-      startBlock: 0 # replace with deployment block
+      startBlock: 21199443
     mapping:
       kind: ethereum/events
       apiVersion: 0.0.7
@@ -38,7 +38,7 @@ dataSources:
     source:
       address: "0x0000000000000000000000000000000000000000" # replace after deployment
       abi: Gateway
-      startBlock: 0 # replace with deployment block
+      startBlock: 21199443 # replace with deployment block
     mapping:
       kind: ethereum/events
       apiVersion: 0.0.7
