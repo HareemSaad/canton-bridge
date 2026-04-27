@@ -513,12 +513,29 @@ export class CantonService implements OnModuleInit {
     });
     if (!res.ok) {
       const text = await res.text();
+      if (text.includes('Party already exists') || text.includes('INVALID_ARGUMENT')) {
+        return this.lookupExistingParty(hint);
+      }
       throw new Error(`Party allocation failed ${res.status}: ${text}`);
     }
     const data = (await res.json()) as { partyDetails?: { party: string } };
     const party = data.partyDetails?.party;
     if (!party) throw new Error('Canton returned no party ID');
     return party;
+  }
+
+  private async lookupExistingParty(hint: string): Promise<string> {
+    const res = await fetch(`${this.baseUrl}/v2/parties`, {
+      headers: this.buildHeaders(),
+    });
+    if (!res.ok) throw new Error(`Failed to list parties: ${res.status}`);
+    const data = (await res.json()) as { partyDetails?: { party: string; displayName?: string }[] };
+    const match = (data.partyDetails ?? []).find(
+      (p) => p.displayName === hint || p.party.startsWith(`${hint}::`),
+    );
+    if (!match) throw new Error(`Party "${hint}" not found after allocation conflict`);
+    this.logger.log(`Reusing existing party for hint="${hint}" partyId=${match.party}`);
+    return match.party;
   }
 
   private async createFingerprintMapping(

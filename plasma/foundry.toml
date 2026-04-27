@@ -3,4 +3,7 @@ src = "src"
 out = "out"
 libs = ["lib"]
 
+[etherscan]
+plasma-testnet = { key = "verifyContract", chain = 9746, url = "https://api.routescan.io/v2/network/testnet/evm/9746/etherscan" }
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

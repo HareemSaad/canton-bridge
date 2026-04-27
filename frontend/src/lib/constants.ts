@@ -1,9 +1,9 @@
-export const RELAYER_URL = 'http://localhost:3000';
+export const RELAYER_URL = 'https://relayer-production-0e4e.up.railway.app';
 
 export const CHAIN_ID = 9746;
 export const CHAIN_HEX = '0x2612';
-export const NETWORK_NAME = 'Plasma Local';
-export const RPC_URL = 'http://localhost:8545';
+export const NETWORK_NAME = 'Plasma Testnet';
+export const RPC_URL = 'https://plasma-testnet.g.alchemy.com/v2/3zFAX-i0bLU7ZfCipH2EuDW02tB51Mt9';
 
 export const CANTON_BRIDGE_ADDRESS = '0x59acb2967cc50c25b9d12b4b329e4da94054a897';
 export const EVM_TOKEN_ADDRESS = '0x8b9e96d678808ef4f01ca03b6935c56cabecf1ad';

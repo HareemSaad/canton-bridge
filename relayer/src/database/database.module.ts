@@ -13,7 +13,7 @@ import { BridgeTransaction } from './entities/bridge-transaction.entity';
         type: 'postgres',
         url: config.get<string>('database.url'),
         entities: [BridgeTransaction],
-        synchronize: config.get<string>('nodeEnv') === 'development',
+        synchronize: true,
         logging: config.get<string>('nodeEnv') === 'development',
       }),
     }),
